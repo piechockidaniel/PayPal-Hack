@@ -1,3 +1,6 @@
 <Solution>
   <Project Path="PayPal360.csproj" />
+  <Project Path="PayPal360.Contracts/PayPal360.Contracts.csproj" />
+  <Project Path="checks/Checks.csproj" />
+  <Project Path="integration-checks/IntegrationChecks.csproj" />
 </Solution>

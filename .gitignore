@@ -6,3 +6,7 @@ data/
 !.env.example
 
 /.vs/**
+/design
+/graphify-out
+/Format-Solution.ps1
+/ROADMAP.md

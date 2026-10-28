@@ -1,17 +1,107 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>PayPal 360 — Commerce operations</title><link rel="stylesheet" href="/style.css"></head>
-<body><div class="layout"><aside><div class="brand"><span class="mark">P</span><div><strong>PayPal 360</strong><small>COMMERCE OPERATIONS</small></div></div>
-<div class="environment"><span></span> SANDBOX WORKSPACE</div><nav><a class="active" href="#overview">Overview</a><a href="#catalog">Storefront</a><a href="#workflows">Approvals</a><a href="#activity">Audit trail</a><a href="#connectors">Connectors</a></nav><div class="side-note">LOCAL PROTOTYPE<br><span>Payments use PayPal sandbox only.</span></div></aside>
-<main><header><div><div class="eyebrow">PAYPAL 360 / WORKSPACE</div><h1>Commerce, with clarity.</h1><p>Your orders, intelligent workflows, and every decision in one place.</p></div><div class="header-tag">● &nbsp;Sandbox mode</div></header>
-<div id="notice" class="notice"></div>
-<section id="overview" class="stats"><div><small>CATALOG</small><strong id="productCount">—</strong><span>products ready to explore</span></div><div><small>ORDERS</small><strong id="orderCount">—</strong><span>sandbox orders</span></div><div><small>NEED REVIEW</small><strong id="pendingCount">—</strong><span>approval requests</span></div><div><small>TRANSPARENCY</small><strong id="auditCount">—</strong><span>recent audit events</span></div></section>
-<div class="main-grid"><div>
-<section class="panel" id="catalog"><div class="section-head"><div><span class="kicker">01 / STOREFRONT</span><h2>Product catalog</h2><p>Sample products held by the local catalog connector.</p></div><span class="chip">LOCAL CATALOG</span></div><div id="products" class="products"></div><div id="checkout" class="checkout hidden"><div class="checkout-title">Sandbox checkout <button id="closeCheckout" class="text-button">Close</button></div><p id="checkoutProduct"></p><div id="paypalButtons"></div></div></section>
-<section class="panel" id="orders"><div class="section-head"><div><span class="kicker">02 / ORDERS</span><h2>Order activity</h2><p>Review a paid sandbox order to generate a proposed follow-up.</p></div><button class="quiet" id="refresh">Refresh</button></div><div id="ordersList"></div></section>
-<section class="panel" id="workflows"><div class="section-head"><div><span class="kicker">03 / WORKFLOWS</span><h2>Approval queue</h2><p>The policy gate requires an operator decision before creating an internal task.</p></div><span class="chip blue">HUMAN IN CONTROL</span></div><div class="identity"><label>Operator name <input id="operator" placeholder="Your display name"></label><label>Local operator token <input id="token" type="password" placeholder="Configured environment token" autocomplete="off"></label></div><label>Decision reason <input id="decisionReason" maxlength="500" placeholder="Why do you approve or reject?"></label><small class="hint">Demo identity: token is shared and the name is self-reported. No external message or refund is sent.</small><div id="proposals"></div></section>
-<section class="panel" id="activity"><div class="section-head"><div><span class="kicker">04 / TRANSPARENCY</span><h2>Decision trail</h2><p>Who proposed, decided and acted — and why.</p></div><span class="chip">LATEST 200 EVENTS</span></div><div id="audit"></div></section></div>
-<div><section class="panel compact" id="connectors"><span class="kicker">INTEGRATIONS</span><h2>Connector health</h2><p>Account capabilities must be verified before use.</p><div id="connectorsList"></div></section><section class="policy"><div class="policy-icon">✳</div><span>WORKFLOW GUARDRAILS</span><h3>AI proposes.<br>You decide.</h3><p>Every proposed follow-up passes through a deterministic approval gate. A decision is recorded before an internal task is created.</p></section>
-<section class="panel compact"><span class="kicker">PROTOTYPE STATUS</span><h2>Built for exploration</h2><p>Orders and approvals reset on restart. The local audit file persists, but is not tamper-proof.</p><div id="features"></div></section></div></div>
-<footer>PAYPAL 360 <span>Sandbox prototype · No live payments</span></footer></main></div><script src="/app.js"></script></body></html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PayPal 360 | Commerce Platform</title><link rel="icon" href="data:,"><link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <symbol id="ico-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+  <symbol id="ico-order" viewBox="0 0 24 24"><path d="M3 4h2l2.2 10.2a2 2 0 0 0 2 1.6h8.2a2 2 0 0 0 1.9-1.4L21 8H6"/><circle cx="10" cy="20" r="1"/><circle cx="18" cy="20" r="1"/></symbol>
+  <symbol id="ico-shield" viewBox="0 0 24 24"><path d="M12 3 4 6v5c0 5 3.3 8.2 8 10 4.7-1.8 8-5 8-10V6z"/><path d="m9 12 2 2 4-4"/></symbol>
+  <symbol id="ico-audit" viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4h6v3H9zM9 11h6M9 15h6M9 18h4"/></symbol>
+  <symbol id="ico-box" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="14" rx="2"/><path d="M3 10h18M8 6l1-3h6l1 3"/></symbol>
+  <symbol id="ico-plug" viewBox="0 0 24 24"><path d="M7 3v6m10-6v6M5 9h14v2a7 7 0 0 1-6 7v3h-2v-3a7 7 0 0 1-6-7z"/></symbol>
+  <symbol id="ico-spark" viewBox="0 0 24 24"><path d="m12 3 2 6 6 2-6 2-2 6-2-6-6-2 6-2zM19 15v5M16.5 17.5h5"/></symbol>
+  <symbol id="ico-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+</svg>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><div class="brand-mark">P</div><div><strong>PayPal 360</strong><span>Commerce Platform</span></div></div>
+    <nav aria-label="Main navigation">
+      <button class="nav-item active" data-view="overview"><svg><use href="#ico-grid"/></svg>Overview</button>
+      <button class="nav-item" data-view="orders"><svg><use href="#ico-order"/></svg>Orders</button>
+      <button class="nav-item" data-view="approvals"><svg><use href="#ico-shield"/></svg>Approvals</button>
+      <button class="nav-item" data-view="policies"><svg><use href="#ico-shield"/></svg>Policies</button>
+      <button class="nav-item" data-view="roles"><svg><use href="#ico-shield"/></svg>Roles</button>
+      <button class="nav-item" data-view="agents"><svg><use href="#ico-spark"/></svg>Agents</button>
 
+      <button class="nav-item" data-view="audit"><svg><use href="#ico-audit"/></svg>Audit Log</button>
+      <button class="nav-item" data-view="catalog"><svg><use href="#ico-box"/></svg>Catalog</button>
+      <button class="nav-item" data-view="connectors"><svg><use href="#ico-plug"/></svg>Connectors</button>
+    </nav>
+    <div class="sidebar-bottom"><div class="help"><strong>Local sandbox prototype</strong><span>Data is stored locally in SQLite.</span></div><div class="operator"><div class="avatar">OP</div><div><strong id="currentUserName">Operator</strong><span>Local demo</span></div></div></div>
+  </aside>
+  <main>
+    <header class="topbar"><div><h1 id="pageTitle">Overview</h1><p id="pageSubtitle">Monitor your commerce platform, orders, and approvals at a glance</p></div><div class="top-actions"><button class="button subtle" id="refresh">Refresh</button><span class="sandbox"><svg><use href="#ico-clock"/></svg>Sandbox Mode</span><button class="button subtle" id="logoutButton" type="button" hidden>Sign out</button><div class="avatar">OP</div></div></header>
+    <div class="content">
+      <div id="notice" class="notice" role="status" hidden></div>
+      <section class="view" id="view-overview">
+        <div class="top-grid">
+          <article class="card"><div class="card-heading"><h2>System Status</h2></div><div id="systemStatus"></div></article>
+          <article class="card"><div class="card-heading"><h2>Recent Orders</h2><button class="link" data-go="orders">View all</button></div><div id="recentOrders"></div></article>
+          <article class="card"><div class="card-heading"><h2>Approvals</h2><button class="link" data-go="approvals">View all</button></div><div id="recentApprovals"></div></article>
+        </div>
+        <div class="lower-grid">
+          <article class="card"><div class="card-heading"><h2>Audit Log</h2><button class="link" data-go="audit">View all</button></div><div id="recentAudit"></div></article>
+          <article class="card"><div class="card-heading"><h2>Quick Actions</h2></div><div class="quick-actions"><button data-go="catalog"><svg><use href="#ico-box"/></svg>Open Catalog</button><button data-go="approvals"><svg><use href="#ico-shield"/></svg>Review Pending Approvals</button><button data-go="audit"><svg><use href="#ico-audit"/></svg>View Audit Trail</button><button data-go="connectors"><svg><use href="#ico-plug"/></svg>View Connectors</button></div></article>
+          <article class="card"><div class="card-heading"><h2>Connector Registry</h2><button class="link" data-go="connectors">View all</button></div><div id="registryPreview" class="registry-grid"></div></article>
+          <article class="card"><div class="card-heading"><h2><span class="purple-star">✦</span> AI Insights</h2></div><p class="muted">Review a paid order to create a proposed internal follow-up.</p><div id="insights"></div></article>
+        </div>
+      </section>
+      <section class="view" id="view-orders" hidden>
+        <div class="toolbar"><label class="search-field"><span class="sr-only">Search orders</span><input id="orderSearch" type="search" placeholder="Search order ID or product"></label><button class="button primary" data-go="catalog">Create sandbox order</button></div>
+        <div class="metric-grid"><div class="metric"><span>Total orders</span><strong id="ordersTotal">0</strong><small>Current session</small></div><div class="metric"><span>Payment captured</span><strong id="ordersPaid">0</strong><small>PayPal sandbox</small></div><div class="metric"><span>Created</span><strong id="ordersCreated">0</strong><small>Not yet paid</small></div><div class="metric"><span>Pending approvals</span><strong id="ordersPending">0</strong><small>Internal follow-ups</small></div></div>
+        <article class="card"><div class="card-heading"><h2>Orders</h2><span class="badge neutral">Current session</span></div><div id="ordersList"></div></article>
+      </section>
+      <section class="view" id="view-detail" hidden><button class="link back" data-go="orders">← Back to orders</button><div id="orderDetail"></div></section>
+      <section class="view" id="view-approvals" hidden>
+        <div class="tabs" aria-label="Approval status"><button id="approvalPendingTab" class="tab active" type="button">Action required</button><button id="approvalResolvedTab" class="tab" type="button">Resolved</button></div>
+        <div class="metric-grid"><div class="metric"><span>Pending actions</span><strong id="approvalPendingCount">0</strong><small>Require operator review</small></div><div class="metric"><span>Approved</span><strong id="approvalApprovedCount">0</strong><small>Internal tasks created</small></div><div class="metric"><span>Rejected</span><strong id="approvalRejectedCount">0</strong><small>No task created</small></div><div class="metric"><span>Policy</span><strong class="metric-label" id="approvalPolicyMode">Human review</strong><small>Current policy</small></div></div>
+        <p class="muted">These requests create internal follow-ups only. No customer message or refund will be sent.</p><div id="approvalsList"></div><article class="card task-list"><div class="card-heading"><h2>Internal follow-up tasks</h2><span class="badge neutral">Local session</span></div><div id="tasksList"></div></article>
+      </section>
+      <section class="view" id="view-policies" hidden>
+        <article class="card"><div class="card-heading"><h2>Follow-up policy</h2><span id="policyVersion" class="badge neutral"></span></div><p class="muted">Control whether an agent can create an internal follow-up. This rule does not authorize PayPal payments, refunds or other external actions.</p>
+          <div class="identity-layout"><form id="policyForm" class="definition-form"><h3>Policy decision</h3><label>Agent action<select id="policyMode"><option value="automatic">Automatic internal task</option><option value="approval_required">Human approval required</option><option value="human_only">Human only (manual action not yet available)</option><option value="blocked">Blocked</option></select></label><label>Reason for policy change<textarea id="policyReason" maxlength="500" required></textarea></label><button class="button primary" type="submit">Save policy</button><p class="hint">Policy changes are audited. Pending approvals created under an older version must be reviewed again.</p></form><div><h3>Current rule</h3><div id="policyDetails"></div></div></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-roles" hidden>
+        <article class="card"><div class="card-heading"><h2>Roles</h2><span class="badge orange">Local prototype</span></div><p class="muted">Define permissions for human or agent roles. Agent permissions are enforced for AI review; other actions remain administrator-only.</p>
+          <div class="identity-layout"><form id="roleForm" class="definition-form"><h3>Create role</h3><label>Role name<input id="roleName" maxlength="80" required placeholder="e.g. Order reviewer"></label><label>Role type<select id="roleKind"><option value="agent">Agent</option><option value="human">Human</option></select></label><fieldset><legend>Permitted capabilities</legend><div id="permissionChoices" class="permission-list"></div></fieldset><label>Reason for creation<textarea class="definition-reason" maxlength="500" required></textarea></label><button class="button primary" type="submit">Create role</button><p class="hint">Changes are recorded with the signed-in administrator identity.</p></form>
+          <div><h3>Defined roles</h3><div id="rolesList"></div></div></div>
+        </article>
+      </section>
+      <section class="view" id="view-agents" hidden>
+        <article class="card"><div class="card-heading"><h2>Agents &amp; sub-agents</h2><span class="badge orange">Local prototype</span></div><p class="muted">Define an agent's role and optional parent. The listed permissions are the intersection of its role and its parent's effective permissions.</p>
+          <div class="identity-layout"><form id="agentForm" class="definition-form"><h3>Create agent</h3><label>Agent name<input id="agentName" maxlength="80" required placeholder="e.g. Order assistant"></label><label>Agent role<select id="agentRole" required></select></label><label>Parent agent<select id="agentParent"></select></label><div id="permissionPreview" class="policy-note"></div><label>Reason for creation<textarea class="definition-reason" maxlength="500" required></textarea></label><button class="button primary" type="submit">Create agent</button><p class="hint">AI review checks agent permissions. These definitions do not grant direct access to PayPal.</p></form>
+          <div><h3>Agent hierarchy</h3><div id="agentsList"></div></div></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-audit" hidden><article class="card"><div class="card-heading"><h2>Audit Log</h2><div class="audit-actions"><button class="button subtle" id="downloadAuditExport" type="button">Download full export</button><button class="button subtle" id="downloadAuditAnchor" type="button">Download checkpoint</button><span class="badge neutral">Latest 200 events</span></div></div><p class="muted">Events are locally hash-linked and verifiable. An optional external checkpoint can be archived separately; no tamper-proof production retention is claimed.</p><div id="auditList"></div></article></section>
+      <section class="view" id="view-catalog" hidden>
+        <div class="toolbar"><label class="search-field"><span class="sr-only">Search products</span><input id="productSearch" type="search" placeholder="Search product name or ID"></label><span class="badge neutral">Local sample catalog</span></div>
+        <div class="metric-grid"><div class="metric"><span>Total products</span><strong id="catalogTotal">0</strong><small>Local sample data</small></div><div class="metric"><span>Inventory</span><strong class="metric-label">Not tracked</strong><small>Not available yet</small></div><div class="metric"><span>Variants</span><strong class="metric-label">Not tracked</strong><small>Not available yet</small></div><div class="metric"><span>Channel sync</span><strong class="metric-label">Unverified</strong><small>No active sync</small></div></div>
+        <article class="card"><div class="card-heading"><h2>All Products</h2></div><p class="muted">Select a product to create a PayPal sandbox order.</p><div id="products"></div><div id="checkout" class="checkout" hidden><div class="card-heading"><h3>Sandbox checkout</h3><button class="link" id="closeCheckout">Close</button></div><p id="checkoutProduct"></p><div id="paypalButtons"></div></div></article>
+      </section>
+      <section class="view" id="view-connectors" hidden>
+        <div class="metric-grid"><div class="metric"><span>Provider entries</span><strong id="connectorTotal">0</strong><small>Roles and services</small></div><div class="metric"><span>Available locally</span><strong id="connectorAvailable">0</strong><small>Demo capabilities</small></div><div class="metric"><span>Unverified</span><strong id="connectorUnverified">0</strong><small>Capabilities need checks</small></div><div class="metric"><span>PayPal sandbox</span><strong id="connectorPayPal" class="metric-label">Not configured</strong><small>Credentials status</small></div></div>
+        <div class="card-heading"><h2>Connector Registry</h2></div><p class="muted">Configuration is not proof of connectivity or account eligibility.</p><div id="connectorsList" class="registry-grid"></div>
+      </section>
+    </div>
+  </main>
+</div>
+<dialog id="approvalDialog"><form id="decisionForm" method="dialog"><div class="modal-heading"><div><h2>Review proposed action</h2><p id="dialogOrder" class="muted"></p></div><button class="icon-button" id="closeDialog" type="button" aria-label="Close">×</button></div><div class="proposal-box"><span class="eyebrow">PROPOSED ACTION</span><p><strong>Create internal follow-up</strong></p><p id="dialogReason"></p></div><div class="policy-note"><svg><use href="#ico-shield"/></svg><div><strong>Policy gate: human approval required</strong><p id="dialogPolicy">Approval creates an internal task only.</p></div></div><div class="status-distinction"><div><span>Payment status</span><strong id="dialogPaymentStatus">Unavailable</strong></div><div><span>Workflow approval</span><strong>Pending operator review</strong></div></div><p class="hint">Evidence such as address verification and fraud checks is not currently available.</p><label>Decision reason <textarea id="decisionReason" maxlength="500" required placeholder="Explain your decision"></textarea></label><p class="hint">Your decision is recorded under your authenticated local account.</p><div id="dialogError" class="error" role="alert" hidden></div><div class="modal-actions"><button class="button outline" id="reject" type="button">Reject</button><button class="button primary" id="approve" type="button">Approve follow-up</button></div></form></dialog>
+<dialog id="loginDialog">
+  <form id="loginForm">
+    <div class="modal-heading"><div><h2>Sign in to PayPal 360</h2><p class="muted">Use the local administrator account to manage the sandbox workspace.</p></div></div>
+    <p id="loginSetup" class="hint" hidden>Set PAYPAL360_ADMIN_USERNAME and PAYPAL360_ADMIN_PASSWORD before the first launch. The password must have at least 12 characters.</p>
+    <label>Username <input id="loginUsername" maxlength="80" autocomplete="username" required></label>
+    <label>Password <input id="loginPassword" type="password" maxlength="128" autocomplete="current-password" required></label>
+    <p id="loginError" class="error" role="alert" hidden></p>
+    <div class="modal-actions"><button class="button primary" type="submit">Sign in</button></div>
+  </form>
+</dialog>
+<script src="/app.js"></script>
+</body></html>
