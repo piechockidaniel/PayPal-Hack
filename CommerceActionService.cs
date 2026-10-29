@@ -9,7 +9,8 @@ public sealed class CommerceActionService(
     CommerceDatabase database,
     PolicyManager policies,
     DemoStore store,
-    IPaymentProvider paymentProvider)
+    IPaymentProvider paymentProvider,
+    IRefundProvider? refundProvider = null)
 {
     public IReadOnlyList<ActionRequest> List(string tenantId = "local") => database.Read(state => state.ActionRequests
         .Where(request => string.Equals(request.TenantId ?? "local", tenantId, StringComparison.Ordinal))
@@ -24,7 +25,8 @@ public sealed class CommerceActionService(
         string reason,
         string tenantId,
         bool human,
-        CancellationToken ct)
+        CancellationToken ct,
+        decimal? amount = null)
     {
         if (string.IsNullOrWhiteSpace(resourceId))
             throw new ArgumentException("A resource ID is required.");
@@ -47,7 +49,8 @@ public sealed class CommerceActionService(
                 tenantId,
                 actor,
                 reason,
-                DateTimeOffset.UtcNow);
+                DateTimeOffset.UtcNow,
+                Amount: amount);
             state.ActionRequests.Add(created);
             CommerceDatabase.Record(state, resourceId, policy.Mode == "approval_required" ? "action.pending_approval" : "action.started", actor,
                 reason, "action-gate", created.Id, action + "-v" + policy.Version, tenantId);
@@ -96,6 +99,8 @@ public sealed class CommerceActionService(
     {
         if (request.Action == "capture_payment")
             return await CaptureAsync(request, actor, ct);
+        if (request.Action == CommerceProviderActions.RefundPayment)
+            return await RefundAsync(request, actor, ct);
 
         return UpdateResult(request, "UNAVAILABLE", actor, "No provider handler is registered for " + request.Action + ".");
     }
@@ -119,8 +124,8 @@ public sealed class CommerceActionService(
                     var authoritative = await paymentProvider.GetOrder(order.ProviderOrderId, ct);
                     if (authoritative.Status.Equals("COMPLETED", StringComparison.OrdinalIgnoreCase))
                     {
-                        store.MarkPaid(order.Id, request.TenantId);
-                        return UpdateResult(request, "COMPLETED", actor, "Provider lookup confirmed the payment capture.");
+                        store.MarkPaid(order.Id, request.TenantId, authoritative.CaptureId ?? authoritative.Id);
+                        return UpdateResult(request, "COMPLETED", actor, "Provider lookup confirmed the payment capture.", authoritative.CaptureId ?? authoritative.Id);
                     }
                     result = authoritative;
                 }
@@ -133,8 +138,8 @@ public sealed class CommerceActionService(
                 return UpdateResult(request, "PENDING_PROVIDER", actor, "Provider returned capture status " + result.Status + ".");
             }
 
-            store.MarkPaid(order.Id, request.TenantId);
-            return UpdateResult(request, "COMPLETED", actor, "Payment capture completed.");
+            store.MarkPaid(order.Id, request.TenantId, result.CaptureId ?? result.Id);
+            return UpdateResult(request, "COMPLETED", actor, "Payment capture completed.", result.CaptureId ?? result.Id);
         }
         catch (ProviderException)
         {
@@ -143,8 +148,8 @@ public sealed class CommerceActionService(
                 var authoritative = await paymentProvider.GetOrder(order.ProviderOrderId, ct);
                 if (authoritative.Status.Equals("COMPLETED", StringComparison.OrdinalIgnoreCase))
                 {
-                    store.MarkPaid(order.Id, request.TenantId);
-                    return UpdateResult(request, "COMPLETED", actor, "Provider lookup resolved a capture after an uncertain response.");
+                    store.MarkPaid(order.Id, request.TenantId, authoritative.CaptureId ?? authoritative.Id);
+                    return UpdateResult(request, "COMPLETED", actor, "Provider lookup resolved a capture after an uncertain response.", authoritative.CaptureId ?? authoritative.Id);
                 }
             }
             catch (NotSupportedException)
@@ -158,6 +163,99 @@ public sealed class CommerceActionService(
             }
 
             return UpdateResult(request, "UNKNOWN", actor, "Provider capture outcome is uncertain; reconcile it before retrying.");
+        }
+    }
+
+    private async Task<ActionOperationResult> RefundAsync(ActionRequest request, string actor, CancellationToken ct)
+    {
+        var order = store.FindOrder(request.ResourceId, request.TenantId);
+        if (order is null)
+            return UpdateResult(request, "FAILED", actor, "The target order was not found in the tenant.");
+        if (order.Status != "PAID")
+            return UpdateResult(request, "FAILED", actor, "Only a paid order can be refunded.");
+        if (refundProvider is null)
+            return UpdateResult(request, "UNAVAILABLE", actor, "No refund provider is registered.");
+        if (string.IsNullOrWhiteSpace(order.ProviderCaptureId))
+            return UpdateResult(request, "UNAVAILABLE", actor, "The PayPal capture reference is not available; reconcile the capture first.");
+
+        var refundAmount = request.Amount ?? order.Price;
+        if (refundAmount <= 0m)
+            return UpdateResult(request, "FAILED", actor, "The refund amount must be greater than zero.");
+        var refunded = database.Read(state => state.ActionRequests
+            .Where(item => item.Action == CommerceProviderActions.RefundPayment &&
+                item.ResourceId == order.Id &&
+                string.Equals(item.TenantId ?? "local", order.TenantId, StringComparison.Ordinal) &&
+                item.Status == "COMPLETED")
+            .Sum(item => item.Amount ?? order.Price));
+        var remaining = order.Price - refunded;
+        if (refundAmount > remaining)
+            return UpdateResult(request, "FAILED", actor, "The requested refund exceeds the remaining refundable amount.");
+
+        var idempotencyKey = "refund-" + request.Id;
+        var providerRequest = new ProviderActionRequest(
+            request.Action,
+            request.TenantId,
+            order.Id,
+            idempotencyKey,
+            actor,
+            false,
+            order.ProviderCaptureId,
+            request.Amount,
+            order.Currency);
+        try
+        {
+            var result = await refundProvider.RefundAsync(providerRequest, ct);
+            var completed = result.Status.Equals("COMPLETED", StringComparison.OrdinalIgnoreCase);
+            return UpdateResult(request,
+                completed ? "COMPLETED" : "PENDING_PROVIDER",
+                actor,
+                result.Message,
+                result.ProviderReference,
+                result.IdempotencyKey,
+                result.RequiresReconciliation);
+        }
+        catch (ProviderException e)
+        {
+            return UpdateResult(request, "UNKNOWN", actor,
+                e.Message + " Reconcile the refund before retrying.",
+                null,
+                idempotencyKey,
+                true);
+        }
+    }
+
+    public async Task<ActionOperationResult> ReconcileAsync(string requestId, string actor, string rationale, string tenantId, CancellationToken ct)
+    {
+        var request = database.Read(state => state.ActionRequests.FirstOrDefault(item =>
+            item.Id == requestId && string.Equals(item.TenantId ?? "local", tenantId, StringComparison.Ordinal)));
+        if (request is null || request.Action != CommerceProviderActions.RefundPayment)
+            throw new InvalidOperationException("Refund action request was not found.");
+        if (request.Status is not ("UNKNOWN" or "PENDING_PROVIDER"))
+            throw new InvalidOperationException("Only an uncertain refund can be reconciled.");
+        if (refundProvider is null)
+            return UpdateResult(request, "UNAVAILABLE", actor, "No refund provider is registered.", reconciliationReason: rationale);
+        if (string.IsNullOrWhiteSpace(request.ProviderReference))
+            throw new InvalidOperationException("The refund has no provider reference to reconcile.");
+
+        var idempotencyKey = request.IdempotencyKey ?? "refund-" + request.Id;
+        try
+        {
+            var result = await refundProvider.ReconcileRefundAsync(
+                new ProviderReconciliationRequest(request.Action, tenantId, request.ResourceId, idempotencyKey, request.ProviderReference), ct);
+            return UpdateResult(request,
+                result.IsAuthoritative && result.Status.Equals("COMPLETED", StringComparison.OrdinalIgnoreCase)
+                    ? "COMPLETED"
+                    : "PENDING_PROVIDER",
+                actor,
+                result.Message,
+                result.ProviderReference ?? request.ProviderReference,
+                idempotencyKey,
+                !(result.IsAuthoritative && result.Status.Equals("COMPLETED", StringComparison.OrdinalIgnoreCase)),
+                rationale);
+        }
+        catch (ProviderException e)
+        {
+            return UpdateResult(request, "UNKNOWN", actor, e.Message + " Refund remains unresolved.", request.ProviderReference, idempotencyKey, true, rationale);
         }
     }
 
@@ -187,7 +285,15 @@ public sealed class CommerceActionService(
         return updated;
     });
 
-    private ActionOperationResult UpdateResult(ActionRequest request, string status, string actor, string message) => database.Update(state =>
+    private ActionOperationResult UpdateResult(
+        ActionRequest request,
+        string status,
+        string actor,
+        string message,
+        string? providerReference = null,
+        string? idempotencyKey = null,
+        bool reconciliationRequired = false,
+        string? reconciliationReason = null) => database.Update(state =>
     {
         var index = state.ActionRequests.FindIndex(item => item.Id == request.Id);
         if (index < 0)
@@ -195,10 +301,15 @@ public sealed class CommerceActionService(
         var updated = state.ActionRequests[index] with
         {
             Status = status,
-            Result = message
+            Result = message,
+            ProviderReference = providerReference ?? state.ActionRequests[index].ProviderReference,
+            IdempotencyKey = idempotencyKey ?? state.ActionRequests[index].IdempotencyKey,
+            ReconciliationRequired = reconciliationRequired,
+            ReconciliationReason = reconciliationReason ?? state.ActionRequests[index].ReconciliationReason
         };
         state.ActionRequests[index] = updated;
-        CommerceDatabase.Record(state, updated.ResourceId, "action." + status.ToLowerInvariant(), actor, message,
+        var auditReason = string.IsNullOrWhiteSpace(reconciliationReason) ? message : message + " Reconciliation reason: " + reconciliationReason;
+        CommerceDatabase.Record(state, updated.ResourceId, "action." + status.ToLowerInvariant(), actor, auditReason,
             "action-executor", updated.Id, updated.Action + "-v" + updated.PolicyVersion, updated.TenantId);
         return new ActionOperationResult(status, updated, message);
     });

@@ -10,7 +10,8 @@ public sealed class DemoCatalog : IProductCatalog
 }
 
 public record FollowUpTask(string Id, string ProposalId, string OrderId, string Description, string Status);
-public record ProviderEvent(string EventId, string ProviderOrderId, string Status, DateTimeOffset ReceivedAt, string TenantId = "local");
+public record ConnectorVerification(string ConnectorId, string Status, string Detail, DateTimeOffset CheckedAt, string TenantId = "local");
+public record ProviderEvent(string EventId, string ProviderOrderId, string Status, DateTimeOffset ReceivedAt, string TenantId = "local", string? ProviderCaptureId = null);
 public record ActionRequest(
     string Id,
     string Action,
@@ -23,7 +24,12 @@ public record ActionRequest(
     DateTimeOffset CreatedAt,
     string? DecidedBy = null,
     string? DecisionReason = null,
-    string? Result = null);
+    string? Result = null,
+    decimal? Amount = null,
+    string? ProviderReference = null,
+    string? IdempotencyKey = null,
+    bool ReconciliationRequired = false,
+    string? ReconciliationReason = null);
 
 public sealed class DemoStore(CommerceDatabase database)
 {
@@ -41,16 +47,26 @@ public sealed class DemoStore(CommerceDatabase database)
     public FollowUpTask? FindTaskByProposal(string proposalId) => database.Read(state => state.Tasks.FirstOrDefault(task => task.ProposalId == proposalId));
     public Order? FindOrder(string id, string tenantId = "local") => database.Read(state => state.Orders.FirstOrDefault(order => order.Id == id && string.Equals(order.TenantId ?? "local", tenantId, StringComparison.Ordinal)));
 
-    public Order MarkPaid(string id, string tenantId = "local") => database.Update(state =>
+    public Order MarkPaid(string id, string tenantId = "local", string? providerCaptureId = null) => database.Update(state =>
     {
         var index = state.Orders.FindIndex(order => order.Id == id && string.Equals(order.TenantId ?? "local", tenantId, StringComparison.Ordinal));
         if (index < 0)
             throw new InvalidOperationException("Order no longer exists.");
         if (state.Orders[index].Status == "PAID")
+        {
+            if (!string.IsNullOrWhiteSpace(providerCaptureId) && state.Orders[index].ProviderCaptureId != providerCaptureId)
+            {
+                state.Orders[index] = state.Orders[index] with
+                {
+                    ProviderCaptureId = providerCaptureId
+                };
+            }
             return state.Orders[index];
+        }
         state.Orders[index] = state.Orders[index] with
         {
-            Status = "PAID"
+            Status = "PAID",
+            ProviderCaptureId = providerCaptureId ?? state.Orders[index].ProviderCaptureId
         };
         CommerceDatabase.Record(state, id, "capture.completed", "system", "PayPal confirmed capture.", "PayPal sandbox", state.Orders[index].ProviderOrderId, null, state.Orders[index].TenantId);
         return state.Orders[index];
@@ -70,7 +86,8 @@ public sealed class DemoStore(CommerceDatabase database)
         {
             order = order with
             {
-                Status = "PAID"
+                Status = "PAID",
+                ProviderCaptureId = providerEvent.ProviderCaptureId ?? order.ProviderCaptureId
             };
             state.Orders[index] = order;
             CommerceDatabase.Record(state, order.Id, "capture.completed", "provider:webhook", "Provider event confirmed capture.", "PayPal sandbox", providerEvent.EventId, null, order.TenantId);

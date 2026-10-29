@@ -9,7 +9,7 @@ using PayPal360.Contracts.Providers;
 namespace PayPal360;
 
 public sealed class PayPalSandboxProvider(IHttpClientFactory clients, IConfiguration config)
-    : IPaymentProvider
+    : IPaymentProvider, IRefundProvider
 {
     private const string BaseUrl = "https://api-m.sandbox.paypal.com";
 
@@ -41,6 +41,12 @@ public sealed class PayPalSandboxProvider(IHttpClientFactory clients, IConfigura
         return doc.RootElement.GetProperty("access_token").GetString()!;
     }
 
+    public async Task<string> VerifyConnectionAsync(CancellationToken cancellationToken)
+    {
+        await Token(cancellationToken);
+        return "PayPal Sandbox credentials were accepted; no order or payment operation was created.";
+    }
+
     private async Task<ProviderResult> Send(
         string path,
         object body,
@@ -63,7 +69,8 @@ public sealed class PayPalSandboxProvider(IHttpClientFactory clients, IConfigura
             root.GetProperty("id").GetString()!,
             root.TryGetProperty("status", out var status)
                 ? status.GetString() ?? "UNKNOWN"
-                : "UNKNOWN"
+                : "UNKNOWN",
+            TryGetCaptureId(root)
         );
     }
 
@@ -114,7 +121,72 @@ public sealed class PayPalSandboxProvider(IHttpClientFactory clients, IConfigura
             root.GetProperty("id").GetString()!,
             root.TryGetProperty("status", out var status)
                 ? status.GetString() ?? "UNKNOWN"
-                : "UNKNOWN");
+                : "UNKNOWN",
+            TryGetCaptureId(root));
+    }
+
+    public async Task<ProviderActionResult> RefundAsync(ProviderActionRequest request, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.ProviderReference))
+            throw new ProviderException("A PayPal capture reference is required for a refund.");
+
+        object payload = request.Amount is { } amount
+            ? new
+            {
+                amount = new
+                {
+                    currency_code = request.Currency ?? "PLN",
+                    value = amount.ToString("F2", CultureInfo.InvariantCulture)
+                }
+            }
+            : new
+            {
+            };
+        var result = await Send(
+            "/v2/payments/captures/" + Uri.EscapeDataString(request.ProviderReference) + "/refund",
+            payload,
+            request.IdempotencyKey,
+            cancellationToken);
+        var complete = result.Status.Equals("COMPLETED", StringComparison.OrdinalIgnoreCase);
+        return new ProviderActionResult(
+            result.Status,
+            result.Id,
+            request.IdempotencyKey,
+            !complete,
+            "PayPal refund provider result: " + result.Status + ".");
+    }
+
+    public async Task<ProviderReconciliationResult> ReconcileRefundAsync(ProviderReconciliationRequest request, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.ProviderReference))
+            throw new ProviderException("A PayPal refund reference is required for reconciliation.");
+
+        using var httpRequest = new HttpRequestMessage(
+            HttpMethod.Get,
+            BaseUrl + "/v2/payments/refunds/" + Uri.EscapeDataString(request.ProviderReference));
+        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await Token(cancellationToken));
+        using var response = await clients.CreateClient().SendAsync(httpRequest, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new ProviderException("PayPal sandbox refund lookup failed (HTTP " + (int)response.StatusCode + ").");
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+        var root = doc.RootElement;
+        var id = root.TryGetProperty("id", out var idElement) ? idElement.GetString() : request.ProviderReference;
+        var status = root.TryGetProperty("status", out var statusElement) ? statusElement.GetString() ?? "UNKNOWN" : "UNKNOWN";
+        return new ProviderReconciliationResult(
+            status,
+            id,
+            status.Equals("COMPLETED", StringComparison.OrdinalIgnoreCase),
+            "PayPal refund lookup returned status " + status + ".");
+    }
+
+    private static string? TryGetCaptureId(JsonElement root)
+    {
+        if (!root.TryGetProperty("purchase_units", out var units) || units.ValueKind != JsonValueKind.Array || units.GetArrayLength() == 0)
+            return null;
+        var unit = units[0];
+        if (!unit.TryGetProperty("payments", out var payments) || !payments.TryGetProperty("captures", out var captures) || captures.ValueKind != JsonValueKind.Array || captures.GetArrayLength() == 0)
+            return null;
+        return captures[0].TryGetProperty("id", out var captureId) ? captureId.GetString() : null;
     }
 
     public async Task<bool> VerifyWebhookAsync(PayPalWebhookHeaders headers, string rawBody, string webhookId, CancellationToken ct)

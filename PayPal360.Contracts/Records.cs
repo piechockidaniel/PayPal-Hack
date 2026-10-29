@@ -1,9 +1,9 @@
 namespace PayPal360.Contracts;
 
 public record Product(string Id, string Name, decimal Price, string Currency);
-public record Order(string Id, string ProductId, string ProductName, decimal Price, string Currency, string ProviderOrderId, string Status, string TenantId = "local");
+public record Order(string Id, string ProductId, string ProductName, decimal Price, string Currency, string ProviderOrderId, string Status, string TenantId = "local", string? ProviderCaptureId = null);
 public record Proposal(string Id, string OrderId, string Reason, string Status, int PolicyVersion = 1, string TenantId = "local");
-public record ProviderResult(string Id, string Status);
+public record ProviderResult(string Id, string Status, string? CaptureId = null);
 
 public record CommerceInvoice(string ExternalId, string Status);
 public record Shipment(string ExternalId, string Status, string? TrackingNumber);

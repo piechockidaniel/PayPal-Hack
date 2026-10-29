@@ -109,6 +109,9 @@ internal static class IntegrationChecks
         var sessionCookie = login.Headers.GetValues("Set-Cookie").First(value => value.StartsWith("PayPal360.Session=", StringComparison.Ordinal)).Split(';')[0];
         Check(login.Headers.TryGetValues("Set-Cookie", out var cookies) && cookies.Any(v => v.Contains("PayPal360.Session") && v.Contains("httponly", StringComparison.OrdinalIgnoreCase) && v.Contains("samesite=strict", StringComparison.OrdinalIgnoreCase)), "session cookie is HttpOnly and SameSite Strict");
         Check((await client.GetAsync("/api/orders")).StatusCode == HttpStatusCode.OK, "authenticated administrator can read merchant data");
+        var auditVerification = await client.GetFromJsonAsync<JsonElement>("/api/audit/verify");
+        Check(auditVerification.GetProperty("isValid").GetBoolean() && auditVerification.GetProperty("checkedEvents").GetInt32() > 0, "authenticated audit chain verification returns a valid result");
+        Check((await client.GetAsync("/api/connectors/gmc/products")).StatusCode == HttpStatusCode.ServiceUnavailable, "unconfigured GMC connector remains read-only and visibly unavailable");
         Check((await client.PostAsJsonAsync("/api/roles", new
         {
             name = "reviewer",
@@ -118,6 +121,13 @@ internal static class IntegrationChecks
         })).StatusCode == HttpStatusCode.BadRequest, "authenticated writes require a CSRF token");
 
         var csrf = (await client.GetFromJsonAsync<JsonElement>("/api/auth/csrf")).GetProperty("token").GetString()!;
+        var paypalVerification = await Send(client, "/api/connectors/paypal/verify", new
+        {
+        }, csrf);
+        var paypalVerificationBody = await paypalVerification.Content.ReadFromJsonAsync<JsonElement>();
+        Check(paypalVerification.StatusCode == HttpStatusCode.OK && paypalVerificationBody.GetProperty("status").GetString() == "verified", "GUI connector verification checks PayPal credentials without creating an order");
+        var connectors = await client.GetFromJsonAsync<JsonElement[]>("/api/connectors");
+        Check(connectors?.Any(item => item.GetProperty("id").GetString() == "paypal" && item.GetProperty("status").GetString() == "verified") == true, "connector registry persists the verified PayPal status");
         var created = await Send(client, "/api/roles", new
         {
             name = "reviewer",
@@ -138,7 +148,7 @@ internal static class IntegrationChecks
         var restrictedAgentId = (await restrictedAgent.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetString();
         var store = factory.Services.GetRequiredService<PayPal360.DemoStore>();
         var testOrder = store.AddOrder(new PayPal360.Contracts.Product("item", "Item", 10m, "PLN"), "TEST-ORDER");
-        store.MarkPaid(testOrder.Id);
+        store.MarkPaid(testOrder.Id, "local", "HTTP-CAPTURE");
         Check((await Send(client, "/api/policies/capture_payment", new
         {
             mode = "automatic",
@@ -154,13 +164,51 @@ internal static class IntegrationChecks
         Check((await Send(client, "/api/policies/refund_payment", new
         {
             mode = "automatic",
-            reason = "Exercise the unimplemented refund boundary"
-        }, csrf)).StatusCode == HttpStatusCode.OK, "administrator can configure the refund policy without enabling an absent handler");
-        Check((await Send(client, "/api/actions/refund_payment", new
+            reason = "Attempt to bypass human refund approval"
+        }, csrf)).StatusCode == HttpStatusCode.BadRequest, "refund policy cannot be changed to automatic execution");
+        var refundRequest = await Send(client, "/api/actions/refund_payment", new
         {
             resourceId = testOrder.Id,
-            reason = "Refund after settlement"
-        }, csrf)).StatusCode == HttpStatusCode.NotImplemented, "unsupported refund action is explicitly unavailable");
+            amount = 5m,
+            reason = "Request a human-reviewed partial refund"
+        }, csrf);
+        var refundRequestBody = await refundRequest.Content.ReadFromJsonAsync<JsonElement>();
+        Check(refundRequest.StatusCode == HttpStatusCode.Accepted && refundRequestBody.GetProperty("status").GetString() == "PENDING_APPROVAL", "refund action waits for human approval");
+        var approvedRefund = await Send(client, "/api/actions/" + refundRequestBody.GetProperty("request").GetProperty("id").GetString() + "/decision", new
+        {
+            decision = "approve",
+            reason = "Human reviewed the partial refund"
+        }, csrf);
+        Check(approvedRefund.StatusCode == HttpStatusCode.OK, "approved refund is executed through the provider boundary");
+        var database = factory.Services.GetRequiredService<PayPal360.CommerceDatabase>();
+        var uncertainRequest = database.Update(state =>
+        {
+            var request = new PayPal360.ActionRequest(
+                "http-reconcile-action",
+                "refund_payment",
+                testOrder.Id,
+                "PENDING_PROVIDER",
+                1,
+                "local",
+                "user:operator",
+                "Provider response was uncertain",
+                DateTimeOffset.UtcNow,
+                Amount: 1m,
+                ProviderReference: "HTTP-REFUND",
+                IdempotencyKey: "refund-http-reconcile",
+                ReconciliationRequired: true);
+            state.ActionRequests.Add(request);
+            return request;
+        });
+        var reconciled = await Send(client, "/api/actions/" + uncertainRequest.Id + "/reconcile", new
+        {
+            reason = "Confirmed the provider refund status before closing the uncertainty"
+        }, csrf);
+        var reconciledBody = await reconciled.Content.ReadFromJsonAsync<JsonElement>();
+        Check(reconciled.StatusCode == HttpStatusCode.OK
+              && reconciledBody.GetProperty("request").GetProperty("reconciliationReason").GetString() == "Confirmed the provider refund status before closing the uncertainty"
+              && factory.Services.GetRequiredService<PayPal360.AuditLog>().Read().Any(item => item.Event == "action.completed" && item.Reason.Contains("Confirmed the provider refund status before closing the uncertainty", StringComparison.Ordinal)),
+            "HTTP reconciliation persists the operator rationale in the action and audit record");
         using (var webhook = new HttpRequestMessage(HttpMethod.Post, "/api/webhooks/paypal")
         {
             Content = new StringContent("{\"id\":\"webhook-event-1\",\"event_type\":\"PAYMENT.CAPTURE.COMPLETED\",\"resource\":{\"supplementary_data\":{\"related_ids\":{\"order_id\":\"TEST-ORDER\"}}}}", Encoding.UTF8, "application/json")
@@ -351,6 +399,10 @@ internal sealed class FakeAiHandler : HttpMessageHandler
                     ? "{\"id\":\"HTTP-ORDER\",\"status\":\"CREATED\"}"
                     : url.EndsWith("/capture", StringComparison.Ordinal)
                         ? "{\"id\":\"HTTP-CAPTURE\",\"status\":\"COMPLETED\"}"
+                        : url.Contains("/v2/payments/refunds/", StringComparison.Ordinal)
+                            ? "{\"id\":\"HTTP-REFUND\",\"status\":\"COMPLETED\"}"
+                        : url.Contains("/v2/payments/captures/", StringComparison.Ordinal)
+                            ? "{\"id\":\"HTTP-REFUND\",\"status\":\"COMPLETED\"}"
                         : url.Contains("/v2/checkout/orders/", StringComparison.Ordinal)
                             ? "{\"id\":\"HTTP-ORDER\",\"status\":\"CREATED\"}"
                             : "{\"output\":[{\"content\":[{\"type\":\"output_text\",\"text\":\"Review fulfillment.\"}]}]}";

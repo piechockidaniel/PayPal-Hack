@@ -8,3 +8,6 @@
 .task-list{margin-top:20px}
 .card select{display:block;width:100%;max-width:380px;border:1px solid #d8dee8;background:white;border-radius:7px;padding:10px;margin:5px 0 12px;color:var(--ink)}
 .audit-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+@media(max-width:800px){html,body{overflow-x:hidden}}
+@media(max-width:800px){.app{grid-template-columns:minmax(0,1fr)}.sidebar,main{min-width:0}.sidebar nav{min-width:0;max-width:100%}}
+@media(max-width:600px){.topbar{flex-wrap:wrap}.topbar>div:first-child{min-width:0}.top-actions{width:100%;justify-content:flex-end}}

@@ -1,8 +1,8 @@
 const byId = id => document.getElementById(id);
 const node = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; };
 const clear = element => element.replaceChildren();
-let state = {}, products = [], orders = [], proposals = [], audit = [], connectors = [], roles = [], agents = [], tasks = [];
-let selectedProduct = null, activeOrder = null, activeProposal = null, checkoutOrder = null, followupPolicy = {};
+let state = {}, products = [], orders = [], proposals = [], actionRequests = [], audit = [], connectors = [], roles = [], agents = [], tasks = [];
+let selectedProduct = null, activeOrder = null, activeProposal = null, activeActionRequest = null, refundOrder = null, checkoutOrder = null, followupPolicy = {};
 const titles = {
   overview: ['Overview','Monitor your commerce platform, orders, and approvals at a glance'],
   orders: ['Orders','Review sandbox orders and payment status'],
@@ -32,6 +32,10 @@ function empty(target,text) {target.append(node('div','empty',text));}
 function displayId(id) {return id ? id.slice(0,10) : 'unknown';}
 function money(amount,currency) { return Number(amount).toFixed(2)+' '+currency; }
 function when(value) {const d=new Date(value);return Number.isNaN(d.getTime()) ? 'Unknown time' : d.toLocaleString();}
+function remainingRefundable(order) {
+  const refunded=actionRequests.filter(request=>request.action==='refund_payment'&&request.resourceId===order.id&&request.status==='COMPLETED').reduce((total,request)=>total+Number(request.amount ?? order.price),0);
+  return Math.max(0,Number(order.price)-refunded);
+}
 function navigate(view) {
   if (!titles[view]) return;
   document.querySelectorAll('.view').forEach(section=>section.hidden=section.id!=='view-'+view);
@@ -44,17 +48,19 @@ document.querySelectorAll('[data-view]').forEach(b=>b.addEventListener('click',(
 document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.go)));
 async function refresh() {
   try {
-    [state,products,orders,proposals,audit,connectors,roles,agents,tasks,followupPolicy]=await Promise.all(['/api/status','/api/products','/api/orders','/api/proposals','/api/audit','/api/connectors','/api/roles','/api/agents','/api/tasks','/api/policies/followup'].map(url=>api(url)));
+    [state,products,orders,proposals,actionRequests,audit,connectors,roles,agents,tasks,followupPolicy]=await Promise.all(['/api/status','/api/products','/api/orders','/api/proposals','/api/action-requests','/api/audit','/api/connectors','/api/roles','/api/agents','/api/tasks','/api/policies/followup'].map(url=>api(url)));
     renderSystem();renderOrders();renderApprovals();renderAudit();renderProducts();renderConnectors();renderInsights();renderIdentities();renderTasks();renderPolicy();
     if(activeOrder && !byId('view-detail').hidden)renderDetail();
   } catch(error){notify(error.message)}
 }
 function renderSystem() {
   const target=byId('systemStatus');clear(target);
-  const summary=node('div','status-summary');summary.append(node('span','dot green'),document.createTextNode('Application responding'));target.append(summary,node('p','muted','Provider access has not been verified.'));
+  const paypalConnector=connectors.find(c=>c.id==='paypal');
+  const paypalVerified=paypalConnector?.status==='verified';
+  const summary=node('div','status-summary');summary.append(node('span','dot green'),document.createTextNode('Application responding'));target.append(summary,node('p','muted',paypalVerified?'PayPal Sandbox connection verified.':state.paypal?'PayPal Sandbox credentials configured; verify the connection in Connectors.':'Provider access is not configured.'));
   const box=node('div','status-box');
   function pair(label,value){const d=node('div');d.append(node('small','',label),node('strong','',value));return d;}
-  box.append(pair('Environment','Sandbox mode'),pair('Backend','Responding'),pair('PayPal API',state.paypal?'Configured, not verified':'Not configured'));target.append(box);
+  box.append(pair('Environment','Sandbox mode'),pair('Backend','Responding'),pair('PayPal API',!state.paypal?'Not configured':paypalVerified?'Verified':'Configured'));target.append(box);
 }
 function orderRow(order) {
   const row=node('div','list-row'), icon=node('div','row-icon','P'), info=node('div','row-main');
@@ -94,6 +100,15 @@ async function downloadArtifact(url, filename) {
   link.remove();
   setTimeout(() => URL.revokeObjectURL(link.href), 0);
 }
+byId('verifyAudit').addEventListener('click', async () => {
+  const status=byId('auditVerificationStatus');
+  try {
+    const result=await api('/api/audit/verify');
+    status.textContent=result.isValid?'Audit chain verified: '+result.checkedEvents+' events checked.':result.failure||'Audit chain verification failed.';
+    status.className=result.isValid?'hint success':'error';
+    notify(result.isValid?'Audit chain verified.':'Audit chain verification failed.');
+  } catch (error) { status.textContent=error.message;status.className='error';notify(error.message); }
+});
 byId('downloadAuditExport').addEventListener('click', async () => {
   try { await downloadArtifact('/api/audit/export', 'paypal360-audit.ndjson'); notify('Audit export downloaded. Archive it outside the application.'); }
   catch (error) { notify(error.message); }
@@ -104,7 +119,17 @@ byId('downloadAuditAnchor').addEventListener('click', async () => {
 });
 function connectorCard(c) {
   const card=node('div','registry-card'), symbol=node('div','row-icon',c.provider.startsWith('PayPal')?'P':c.provider.startsWith('Google')?'G':'•');
-  card.append(symbol,node('strong','',c.provider),node('small','',c.role),node('div','state',c.status.replaceAll('-',' ')),node('small','',c.detail));return card;
+  card.append(symbol,node('strong','',c.provider),node('small','',c.role),node('div','state',c.status.replaceAll('-',' ')),node('small','',c.detail));
+  if(c.canVerify){
+    const verify=action(c.status==='verified'?'Verify again':'Verify',async()=>{
+      verify.disabled=true;
+      try { const result=await post('/api/connectors/'+encodeURIComponent(c.id)+'/verify',{}); await refresh(); notify(result.detail); }
+      catch(error){ notify(error.message); verify.disabled=false; }
+    },'button outline');
+    verify.setAttribute('aria-label','Verify '+c.provider+' connection');
+    const actions=node('div');actions.style.marginTop='12px';actions.append(verify);card.append(actions);
+  }
+  return card;
 }
 function renderInsights() {
   const target=byId('insights');clear(target);
@@ -127,12 +152,82 @@ function renderDetail() {
   const b=action('Ask AI to review',async()=>{b.disabled=true;try{const result=await post('/api/orders/'+order.id+'/review',{agentId:agentSelect.value});await refresh();notify(result.status==='TASK_CREATED'?'Internal follow-up created automatically under the configured policy.':'AI proposal created and sent to the approval queue.');navigate('approvals')}catch(e){notify(e.message)}finally{b.disabled=false}},'button primary');
   b.disabled=order.status!=='PAID'||!state.ai||!eligible.length;review.append(b);
   if(b.disabled)review.append(node('p','hint',order.status!=='PAID'?'A completed payment is required.':!state.ai?'Configure the AI provider to use this feature.':'Define an agent with read orders and propose follow-up permissions.'));left.append(review);
+  const refund=node('article','card');refund.append(node('h2','','Refund'));refund.append(node('p','muted','Request a full or partial PayPal Sandbox refund. A human operator must approve it before PayPal is called.'));
+  const remaining=remainingRefundable(order);
+  const refundButton=action('Request refund',()=>openRefundRequest(order),'button primary');
+  refundButton.disabled=order.status!=='PAID'||!order.providerCaptureId||remaining<=0;
+  refund.append(refundButton);
+  if(order.status!=='PAID')refund.append(node('p','hint','A captured payment is required.'));
+  else if(!order.providerCaptureId)refund.append(node('p','hint','The PayPal capture reference is missing; reconcile the capture first.'));
+  else if(remaining<=0)refund.append(node('p','hint','The order has no remaining refundable balance.'));
+  left.append(refund);
   const activity=node('article','card');activity.append(node('h2','','Order Activity'));const matches=audit.filter(a=>a.orderId===order.id);
   if(!matches.length)empty(activity,'No audit events for this order.');else matches.forEach(a=>{const line=node('div','timeline-event');line.append(node('strong','',a.event),node('p','',a.reason),node('small','',a.actor+' | '+when(a.at)));activity.append(line)});right.append(activity);
   const metadata=node('article','card');metadata.append(node('h2','','Payment & Metadata'));const data=node('div','metadata');
   for(const [label,value] of [['Gateway','PayPal sandbox'],['Provider order ID',order.providerOrderId],['Payment status',order.status],['Customer details','Not collected']])data.append(node('span','',label),node('strong','',value));
-  metadata.append(data);right.append(metadata);grid.append(left,right);target.append(grid);
+  metadata.append(data);right.append(metadata);
+  const providerActions=actionRequests.filter(request=>request.resourceId===order.id);
+  if(providerActions.length){
+    const actionsCard=node('article','card');actionsCard.append(node('h2','','Provider actions'));
+    providerActions.forEach(request=>{
+      const item=node('div','timeline-event'),amount=request.amount===null||request.amount===undefined?money(order.price,order.currency):money(request.amount,order.currency);
+      item.append(node('strong','',request.action.replaceAll('_',' ')+' · '+request.status.replaceAll('_',' ')),node('p','',request.result||'Awaiting decision.'),node('small','',amount+(request.providerReference?' · Provider reference: '+request.providerReference:'')));
+      if(request.reconciliationReason)item.append(node('small','', 'Reconciliation reason: '+request.reconciliationReason));
+      actionsCard.append(item);
+    });
+    right.append(actionsCard);
+  }
+  grid.append(left,right);target.append(grid);
 }
+function openRefundRequest(order) {
+  refundOrder=order;
+  const remaining=remainingRefundable(order);
+  byId('refundOrderLabel').textContent='Order '+displayId(order.id)+' · '+money(order.price,order.currency);
+  byId('refundAmount').value=remaining.toFixed(2);
+  byId('refundAmount').max=remaining.toFixed(2);
+  byId('refundAmountHint').textContent='Maximum remaining refundable amount: '+money(remaining,order.currency);
+  byId('refundRequestSubmit').disabled=remaining<=0;
+  byId('refundReason').value='';byId('refundRequestError').hidden=true;byId('refundRequestDialog').showModal();
+}
+async function submitRefundRequest(event) {
+  event.preventDefault();
+  if(!refundOrder)return;
+  const amount=Number(byId('refundAmount').value),reason=byId('refundReason').value.trim(),error=byId('refundRequestError');
+  const remaining=remainingRefundable(refundOrder);
+  if(!Number.isFinite(amount)||amount<=0||amount>remaining){error.textContent='Enter an amount between 0.01 and the remaining refundable balance.';error.hidden=false;return}
+  if(!reason){error.textContent='Enter the refund reason.';error.hidden=false;return}
+  const button=byId('refundRequestSubmit');button.disabled=true;
+  try { await post('/api/actions/refund_payment',{resourceId:refundOrder.id,amount,reason});byId('refundRequestDialog').close();await refresh();navigate('approvals');notify('Refund request submitted for human approval.'); }
+  catch(e){error.textContent=e.message;error.hidden=false}finally{button.disabled=false}
+}
+function openActionApproval(request) {
+  activeActionRequest=request;
+  const order=orders.find(o=>o.id===request.resourceId),amount=request.amount===null||request.amount===undefined?'Full amount':money(request.amount,order?.currency||'PLN');
+  byId('actionApprovalLabel').textContent='Order '+displayId(request.resourceId);
+  byId('actionApprovalSummary').textContent=request.action.replaceAll('_',' ')+' · '+amount;
+  byId('actionApprovalReason').textContent=request.reason;byId('actionDecisionReason').value='';byId('actionApprovalError').hidden=true;byId('actionApprovalDialog').showModal();
+}
+async function decideProviderAction(decision) {
+  if(!activeActionRequest)return;
+  const error=byId('actionApprovalError'),reason=byId('actionDecisionReason').value.trim();
+  if(!reason){error.textContent='Enter the decision reason.';error.hidden=false;return}
+  byId('approveProviderAction').disabled=true;byId('rejectProviderAction').disabled=true;
+  try { await post('/api/actions/'+activeActionRequest.id+'/decision',{decision,reason});byId('actionApprovalDialog').close();await refresh();notify(decision==='approve'?'Provider action approved and processed.':'Provider action rejected.'); }
+  catch(e){error.textContent=e.message;error.hidden=false}finally{byId('approveProviderAction').disabled=false;byId('rejectProviderAction').disabled=false}
+}
+async function reconcileAction(request) {
+  const reason=window.prompt('Explain why this provider action is being reconciled.');
+  if(!reason?.trim())return;
+  try { await post('/api/actions/'+request.id+'/reconcile',{reason:reason.trim()});await refresh();notify('Provider action reconciliation completed.'); }
+  catch(e){notify(e.message)}
+}
+byId('refundRequestForm').addEventListener('submit',submitRefundRequest);
+byId('closeRefundRequest').addEventListener('click',()=>byId('refundRequestDialog').close());
+byId('cancelRefundRequest').addEventListener('click',()=>byId('refundRequestDialog').close());
+byId('closeActionApproval').addEventListener('click',()=>byId('actionApprovalDialog').close());
+byId('actionApprovalForm').addEventListener('submit',event=>event.preventDefault());
+byId('approveProviderAction').addEventListener('click',()=>decideProviderAction('approve'));
+byId('rejectProviderAction').addEventListener('click',()=>decideProviderAction('reject'));
 byId('closeDialog').addEventListener('click',()=>byId('approvalDialog').close());
 byId('decisionForm').addEventListener('submit',event=>event.preventDefault());
 async function decide(decision) {
@@ -233,16 +328,22 @@ function table(headers) {
 }
 function orderWorkflowStatus(id) {
   const matches=proposals.filter(p=>p.orderId===id);
-  if(!matches.length) return 'No proposal';
-  if(matches.some(p=>p.status==='PENDING')) return 'Approval needed';
-  return matches[0].status==='REJECTED'?'Rejected':'Task created';
+  const actions=actionRequests.filter(request=>request.resourceId===id);
+  if(matches.some(p=>p.status==='PENDING')||actions.some(request=>request.status==='PENDING_APPROVAL')) return 'Approval needed';
+  if(actions.some(request=>request.status==='PENDING_PROVIDER'||request.status==='UNKNOWN')) return 'Reconciliation needed';
+  if(actions.some(request=>request.status==='COMPLETED')) return 'Provider action completed';
+  if(!matches.length&&!actions.length) return 'No proposal';
+  if(actions.some(request=>request.status==='FAILED'||request.status==='UNAVAILABLE')) return 'Action failed';
+  if(actions.some(request=>request.status==='REJECTED')||matches.every(p=>p.status==='REJECTED')) return 'Rejected';
+  if(matches.some(p=>p.status==='TASK_CREATED')) return 'Task created';
+  return 'No active action';
 }
 function renderOrders() {
   const recent=byId('recentOrders');clear(recent);
   if(!orders.length)empty(recent,'No sandbox orders yet. Open the catalog to start.');
   else {const list=node('div','list-box');orders.slice(0,4).forEach(o=>list.append(orderRow(o)));recent.append(list)}
   addMetric('ordersTotal',orders.length);addMetric('ordersPaid',orders.filter(o=>o.status==='PAID').length);
-  addMetric('ordersCreated',orders.filter(o=>o.status==='CREATED').length);addMetric('ordersPending',proposals.filter(p=>p.status==='PENDING').length);
+  addMetric('ordersCreated',orders.filter(o=>o.status==='CREATED').length);addMetric('ordersPending',proposals.filter(p=>p.status==='PENDING').length+actionRequests.filter(request=>request.status==='PENDING_APPROVAL').length);
   const target=byId('ordersList');clear(target);
   const query=byId('orderSearch').value.trim().toLowerCase();
   const matching=orders.filter(o=>(o.id+' '+o.productName+' '+o.providerOrderId).toLowerCase().includes(query));
@@ -260,16 +361,18 @@ function renderOrders() {
 }
 function renderApprovals() {
   const recent=byId('recentApprovals');clear(recent);
-  if(!proposals.length)empty(recent,'No approval requests yet.');
-  else {const list=node('div','list-box');proposals.slice(0,2).forEach(p=>list.append(proposalRow(p)));recent.append(list)}
-  addMetric('approvalPendingCount',proposals.filter(p=>p.status==='PENDING').length);
+  const pendingProposals=proposals.filter(p=>p.status==='PENDING'),pendingActions=actionRequests.filter(r=>r.status==='PENDING_APPROVAL');
+  if(!proposals.length&&!actionRequests.length)empty(recent,'No approval requests yet.');
+  else {const list=node('div','list-box');proposals.slice(0,2).forEach(p=>list.append(proposalRow(p)));actionRequests.filter(r=>r.status==='PENDING_APPROVAL').slice(0,2).forEach(r=>list.append(providerActionRow(r,true)));recent.append(list)}
+  addMetric('approvalPendingCount',pendingProposals.length+pendingActions.length);
   addMetric('approvalApprovedCount',proposals.filter(p=>p.status==='TASK_CREATED').length);
   addMetric('approvalRejectedCount',proposals.filter(p=>p.status==='REJECTED').length);
   byId('approvalPendingTab').classList.toggle('active',approvalFilter==='pending');byId('approvalResolvedTab').classList.toggle('active',approvalFilter==='resolved');
   const target=byId('approvalsList');clear(target);
-  const matching=proposals.filter(p=>approvalFilter==='pending'?p.status==='PENDING':p.status!=='PENDING');
-  if(!matching.length)return empty(target,approvalFilter==='pending'?'No actions require approval.':'No resolved actions yet.');
-  for(const p of matching){
+  const matchingProposals=proposals.filter(p=>approvalFilter==='pending'?p.status==='PENDING':p.status!=='PENDING');
+  const matchingActions=actionRequests.filter(r=>approvalFilter==='pending'?r.status==='PENDING_APPROVAL':r.status!=='PENDING_APPROVAL');
+  if(!matchingProposals.length&&!matchingActions.length)return empty(target,approvalFilter==='pending'?'No actions require approval.':'No resolved actions yet.');
+  for(const p of matchingProposals){
     const card=node('article','card approval-card'),description=node('div','approval-summary'),details=node('div','approval-facts'),controls=node('div','approval-actions');
     const order=orders.find(o=>o.id===p.orderId);
     description.append(badge('Internal follow-up','neutral'),node('h3','','Order '+displayId(p.orderId)),node('p','',order?money(order.price,order.currency):'Order no longer available'),badge('follow-up-v'+p.policyVersion,'orange'));
@@ -279,6 +382,22 @@ function renderApprovals() {
     if(followupPolicy.mode==='human_only' && order?.status==='PAID') controls.append(action('Create manual task',async()=>{const description=window.prompt('Describe the internal follow-up task');if(!description?.trim())return;try{await post('/api/orders/'+order.id+'/tasks',{description:description.trim()});await refresh();notify('Manual internal task created.')}catch(e){notify(e.message)}},'button outline'));
     card.append(description,details,controls);target.append(card);
   }
+  matchingActions.forEach(request=>target.append(providerActionRow(request,false)));
+}
+function providerActionRow(request,compact) {
+  const card=node(compact?'div':'article',compact?'list-row':'card approval-card'),order=orders.find(o=>o.id===request.resourceId),info=node('div',compact?'row-main':'approval-summary'),details=node('div',compact?'':'approval-facts'),controls=node('div',compact?'':'approval-actions');
+  const amount=request.amount===null||request.amount===undefined?(order?'Full amount':'Amount unavailable'):(order?money(request.amount,order.currency):String(request.amount));
+  if(compact){info.append(node('strong','',request.action.replaceAll('_',' ')),node('small','', 'Order '+displayId(request.resourceId)+' · '+amount));card.append(info,badge(request.status==='PENDING_APPROVAL'?'Approval needed':request.status,'orange'));if(request.status==='PENDING_APPROVAL')card.append(action('Review',()=>openActionApproval(request),'link'));return card;}
+  const statusBadge=request.status==='COMPLETED'?'green':request.status==='REJECTED'?'neutral':'orange';
+  info.append(badge('Provider action','neutral'),node('h3','',request.action.replaceAll('_',' ')),node('p','',order?amount:'Order '+displayId(request.resourceId)),badge(request.status.replaceAll('_',' '),statusBadge));
+  const reason=node('div');reason.append(node('small','','REQUEST REASON'),node('p','',request.reason));
+  const result=node('div');result.append(node('small','','RESULT'),node('p','',request.result||'Awaiting decision'));details.append(reason,result);
+  if(request.providerReference){const reference=node('div');reference.append(node('small','','PROVIDER REFERENCE'),node('p','',request.providerReference));details.append(reference)}
+  if(request.reconciliationReason){const reconciliation=node('div');reconciliation.append(node('small','','RECONCILIATION REASON'),node('p','',request.reconciliationReason));details.append(reconciliation)}
+  if(request.status==='PENDING_APPROVAL')controls.append(action('Review & decide',()=>openActionApproval(request),'button primary'));
+  else if(request.status==='PENDING_PROVIDER'||request.status==='UNKNOWN')controls.append(action('Reconcile',()=>reconcileAction(request),'button outline'));
+  else controls.append(badge(request.status.replaceAll('_',' '),statusBadge));
+  card.append(info,details,controls);return card;
 }
 function renderProducts() {
   addMetric('catalogTotal',products.length);const target=byId('products');clear(target);
@@ -294,9 +413,9 @@ function renderProducts() {
   if(!state.paypal)target.append(node('p','hint','Configure PayPal sandbox credentials to use checkout.'));
 }
 function renderConnectors() {
-  addMetric('connectorTotal',connectors.length);addMetric('connectorAvailable',connectors.filter(c=>c.status==='available').length);
+  addMetric('connectorTotal',connectors.length);addMetric('connectorAvailable',connectors.filter(c=>c.status==='available'||c.status==='verified').length);
   addMetric('connectorUnverified',connectors.filter(c=>c.status==='unverified'||c.status==='configured-not-verified').length);
-  byId('connectorPayPal').textContent=state.paypal?'Configured':'Not configured';
+  const paypal=connectors.find(c=>c.id==='paypal');byId('connectorPayPal').textContent=!state.paypal?'Not configured':paypal?.status==='verified'?'Verified':'Configured';
   for(const [id,items] of [['registryPreview',connectors.slice(0,3)],['connectorsList',connectors]]) {
     const t=byId(id);clear(t);items.forEach(c=>t.append(connectorCard(c)));
   }
@@ -364,7 +483,7 @@ byId('logoutButton').addEventListener('click', async () => {
   try {
     await post('/api/auth/logout', {});
     byId('logoutButton').hidden = true;
-    orders=[];proposals=[];audit=[];roles=[];agents=[];tasks=[];
+    orders=[];proposals=[];actionRequests=[];audit=[];roles=[];agents=[];tasks=[];
     renderOrders();renderApprovals();renderAudit();renderIdentities();renderTasks();
     await startSession();
   } catch (error) { notify(error.message); }

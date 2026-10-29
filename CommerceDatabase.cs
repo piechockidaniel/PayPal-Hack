@@ -26,6 +26,7 @@ public sealed class CommerceState
     public List<ProviderEvent> ProviderEvents { get; set; } = [];
     public List<PayPalWebhookInboxItem> WebhookInbox { get; set; } = [];
     public List<ActionRequest> ActionRequests { get; set; } = [];
+    public List<ConnectorVerification> ConnectorVerifications { get; set; } = [];
 }
 
 public sealed class CommerceDatabase

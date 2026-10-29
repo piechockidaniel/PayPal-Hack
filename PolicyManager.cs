@@ -19,7 +19,10 @@ public sealed class PolicyManager(CommerceDatabase database)
 
     public static PolicyRule Current(CommerceState state, string action, string tenantId = "local") =>
         state.Policies.FirstOrDefault(rule => rule.Action == action && string.Equals(rule.TenantId ?? "local", tenantId, StringComparison.Ordinal))
-        ?? new PolicyRule(action, action == FollowUpAction ? "approval_required" : "blocked", 1, tenantId);
+        ?? new PolicyRule(action,
+            action == FollowUpAction || action == "refund_payment" ? "approval_required" : "blocked",
+            1,
+            tenantId);
 
     public PolicyRule GetFollowUp(string tenantId = "local") => database.Read(state => Current(state, tenantId));
 
@@ -40,6 +43,8 @@ public sealed class PolicyManager(CommerceDatabase database)
         ValidateAction(action);
         if (!Modes.Contains(mode))
             throw new ArgumentException("Unknown policy mode.");
+        if (action == "refund_payment" && mode == "automatic")
+            throw new ArgumentException("Refunds require human approval.");
         return database.Update(state =>
         {
             var previous = Current(state, action, tenantId);

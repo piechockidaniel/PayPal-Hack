@@ -1,7 +1,11 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using PayPal360;
+using PayPal360.Contracts;
+using PayPal360.Contracts.Providers;
 
 static void Check(bool ok, string message)
 {
@@ -16,6 +20,26 @@ Check(
         && catalog.Find("p1")?.Price == 49m
         && catalog.Find("missing") is null,
     "catalog resolves only known products"
+);
+
+var draftProviderAction = new ProviderActionRequest(
+    CommerceProviderActions.RefundPayment,
+    "local",
+    "order-1",
+    "refund-order-1-1",
+    "test-operator");
+var draftProviderResult = new ProviderActionResult(
+    "PENDING_PROVIDER",
+    "provider-ref-1",
+    draftProviderAction.IdempotencyKey,
+    true,
+    "Reconcile before retrying.");
+Check(
+    draftProviderAction.Action == "refund_payment"
+        && !string.IsNullOrWhiteSpace(draftProviderAction.IdempotencyKey)
+        && draftProviderResult.ProviderReference == "provider-ref-1"
+        && draftProviderResult.RequiresReconciliation,
+    "draft external action contracts carry idempotency, provider reference and reconciliation state"
 );
 
 var testDirectory = Path.Combine(Path.GetTempPath(), "paypal360-check-" + Guid.NewGuid().ToString("N"));
@@ -94,6 +118,7 @@ var settings = new ConfigurationBuilder()
 var handler = new FakeHandler();
 var clients = new FakeFactory(handler);
 var paypal = new PayPalSandboxProvider(clients, settings);
+Check((await paypal.VerifyConnectionAsync(CancellationToken.None)).Contains("no order", StringComparison.OrdinalIgnoreCase), "PayPal verification checks OAuth without creating an order");
 var created = await paypal.CreateOrder(catalog.Find("p1")!, "checkout-key", CancellationToken.None);
 
 Check(created.Id == "SANDBOX-ORDER", "sandbox adapter parses created order");
@@ -128,6 +153,35 @@ var reason = await ai.Suggest(store.FindOrder(order.Id)!, CancellationToken.None
 Check(
     reason == "Review fulfillment." && handler.LastUrl == "https://api.openai.com/v1/responses",
     "AI adapter extracts response text"
+);
+
+var gmcKeyPath = Path.Combine(testDirectory, "gmc-service-account.json");
+using (var gmcKey = RSA.Create(2048))
+{
+    File.WriteAllText(gmcKeyPath, JsonSerializer.Serialize(new
+    {
+        type = "service_account",
+        project_id = "test-project",
+        client_email = "gmc-test@test-project.iam.gserviceaccount.com",
+        private_key = gmcKey.ExportPkcs8PrivateKeyPem()
+    }));
+}
+var gmcSettings = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+{
+    ["GMC_MERCHANT_ACCOUNT_ID"] = "5308690318",
+    ["GMC_SERVICE_ACCOUNT_JSON"] = gmcKeyPath,
+    ["GMC_TENANT_ID"] = "local"
+}).Build();
+var gmcHandler = new GmcFakeHandler();
+var gmc = new GmcCatalogProvider(new FakeFactory(gmcHandler), gmcSettings);
+var gmcPage = await gmc.ListProductsAsync("local", null, 1, CancellationToken.None);
+Check(
+    gmc.IsConfigured
+        && gmcPage.Products.Single().OfferId == "sku-1"
+        && gmcPage.Products.Single().Title == "Read-only GMC product"
+        && gmcHandler.LastMethod == HttpMethod.Get
+        && gmcHandler.LastUrl.Contains("accounts/5308690318/products"),
+    "GMC connector authenticates with an external service account and only lists processed products"
 );
 var retryDatabase = new CommerceDatabase(Path.Combine(testDirectory, "retry"));
 var paymentStub = new RetryPaymentProvider();
@@ -357,14 +411,15 @@ Check(store.AddProposal(order.Id, "Not allowed", "user:test", "agent:test") is n
 policies.UpdateFollowUp("blocked", "user:test", "Block the action");
 Check(store.AddProposal(order.Id, "Not allowed", "user:test", "agent:test") is null, "blocked policy denies agent follow-up");
 Check(new PolicyManager(new CommerceDatabase(testDirectory)).GetFollowUp().Mode == "blocked", "policy choice survives restart");
-Check(policies.Get("refund_payment").Mode == "blocked", "unwired external actions default to blocked");
+Check(policies.Get("refund_payment").Mode == "approval_required", "refunds default to human approval");
 Check(policies.Update("refund_payment", "approval_required", "user:test", "Require review for future refunds").Mode == "approval_required", "non-follow-up policy can be versioned safely");
 var actionDirectory = Path.Combine(testDirectory, "actions");
 var actionDatabase = new CommerceDatabase(actionDirectory);
 var actionStore = new DemoStore(actionDatabase);
 var actionPolicies = new PolicyManager(actionDatabase);
-var actionService = new CommerceActionService(actionDatabase, actionPolicies, actionStore, paypal);
-var blockedAction = await actionService.RequestAsync("refund_payment", "missing-order", "agent:blocked", "Refund request", "local", false, CancellationToken.None);
+var refundProvider = new FakeRefundProvider();
+var actionService = new CommerceActionService(actionDatabase, actionPolicies, actionStore, paypal, refundProvider);
+var blockedAction = await actionService.RequestAsync("fulfill_order", "missing-order", "agent:blocked", "Fulfillment request", "local", false, CancellationToken.None);
 Check(blockedAction.Status == "DENIED" && blockedAction.Request.Status == "DENIED", "non-follow-up actions fail closed while blocked");
 var captureOrder = actionStore.AddOrder(catalog.Find("p1")!, "ACTION-ORDER");
 actionPolicies.Update("capture_payment", "automatic", "user:test", "Enable reviewed capture handler");
@@ -375,9 +430,32 @@ var approvalOrder = actionStore.AddOrder(catalog.Find("p1")!, "ACTION-APPROVAL-O
 var pendingAction = await actionService.RequestAsync("capture_payment", approvalOrder.Id, "agent:payments", "Capture after review", "local", false, CancellationToken.None);
 var approvedAction = await actionService.DecideAsync(pendingAction.Request.Id, "approve", "user:operator", "Reviewed the capture", "local", CancellationToken.None);
 Check(pendingAction.Status == "PENDING_APPROVAL" && approvedAction.Status == "COMPLETED", "approval-required action waits for a human and then executes");
-actionPolicies.Update("refund_payment", "automatic", "user:test", "Exercise missing provider handler");
-var unavailableAction = await actionService.RequestAsync("refund_payment", captureOrder.Id, "user:operator", "Refund after settlement", "local", true, CancellationToken.None);
-Check(unavailableAction.Status == "UNAVAILABLE" && unavailableAction.Request.Status == "UNAVAILABLE", "configured action without a provider handler remains explicitly unavailable");
+var refundAction = await actionService.RequestAsync("refund_payment", captureOrder.Id, "user:operator", "Refund after settlement", "local", true, CancellationToken.None, 10m);
+var completedRefund = await actionService.DecideAsync(refundAction.Request.Id, "approve", "user:operator", "Reviewed the refund", "local", CancellationToken.None);
+Check(refundAction.Status == "PENDING_APPROVAL"
+      && completedRefund.Status == "COMPLETED"
+      && completedRefund.Request.Amount == 10m
+      && completedRefund.Request.ProviderReference == "REFUND-1"
+      && completedRefund.Request.IdempotencyKey == "refund-" + completedRefund.Request.Id
+      && refundProvider.LastRequest?.ProviderReference == "CAPTURE-1",
+    "approved partial refunds use the persisted capture reference and stable idempotency key");
+var fullRefundOrder = actionStore.AddOrder(catalog.Find("p1")!, "ACTION-FULL-REFUND-ORDER");
+actionStore.MarkPaid(fullRefundOrder.Id, "local", "CAPTURE-FULL");
+var fullRefund = await actionService.RequestAsync("refund_payment", fullRefundOrder.Id, "user:operator", "Refund the complete order", "local", true, CancellationToken.None);
+var completedFullRefund = await actionService.DecideAsync(fullRefund.Request.Id, "approve", "user:operator", "Reviewed the full refund", "local", CancellationToken.None);
+var repeatedFullRefund = await actionService.RequestAsync("refund_payment", fullRefundOrder.Id, "user:operator", "Repeat refund test", "local", true, CancellationToken.None);
+var rejectedRepeatedFullRefund = await actionService.DecideAsync(repeatedFullRefund.Request.Id, "approve", "user:operator", "Checked that the balance is exhausted", "local", CancellationToken.None);
+Check(completedFullRefund.Status == "COMPLETED" && completedFullRefund.Request.Amount is null && rejectedRepeatedFullRefund.Status == "FAILED",
+    "a completed full refund exhausts the refundable balance");
+var overRefund = await actionService.RequestAsync("refund_payment", captureOrder.Id, "user:operator", "Refund remaining amount", "local", true, CancellationToken.None, 40m);
+var rejectedOverRefund = await actionService.DecideAsync(overRefund.Request.Id, "approve", "user:operator", "Checked remaining refundable balance", "local", CancellationToken.None);
+Check(rejectedOverRefund.Status == "FAILED", "local refund invariant prevents over-refunding");
+refundProvider.ReturnPending = true;
+var uncertainRefund = await actionService.RequestAsync("refund_payment", captureOrder.Id, "user:operator", "Exercise provider reconciliation", "local", true, CancellationToken.None, 5m);
+var pendingRefund = await actionService.DecideAsync(uncertainRefund.Request.Id, "approve", "user:operator", "Reviewed provider uncertainty", "local", CancellationToken.None);
+var reconciledRefund = await actionService.ReconcileAsync(pendingRefund.Request.Id, "user:operator", "Provider status lookup confirmed the refund", "local", CancellationToken.None);
+Check(pendingRefund.Status == "PENDING_PROVIDER" && reconciledRefund.Status == "COMPLETED" && reconciledRefund.Request.ReconciliationRequired == false && reconciledRefund.Request.ReconciliationReason == "Provider status lookup confirmed the refund",
+    "uncertain refunds reconcile to an authoritative completed provider result");
 policies.UpdateFollowUp("human_only", "user:test", "Require an explicit operator task");
 var manualTask = store.CreateManualTask(order.Id, "Operator follow-up", "user:test");
 Check(manualTask.Status == "OPEN" && store.ListTasks().Any(task => task.Id == manualTask.Id), "human-only policy supports an explicit manual task");
@@ -422,9 +500,28 @@ database.Update(state =>
 Check(store.AddProposal(order.Id, "Unknown policy", "user:test", "agent:test") is null, "unknown stored policy fails closed");
 Console.WriteLine("All checks passed.");
 
-sealed class FakeFactory(FakeHandler handler) : IHttpClientFactory
+sealed class FakeFactory(HttpMessageHandler handler) : IHttpClientFactory
 {
     public HttpClient CreateClient(string name) => new(handler, false);
+}
+
+sealed class GmcFakeHandler : HttpMessageHandler
+{
+    public string LastUrl = "";
+    public HttpMethod LastMethod = HttpMethod.Options;
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        LastUrl = request.RequestUri!.ToString();
+        LastMethod = request.Method;
+        var json = LastUrl.StartsWith("https://oauth2.googleapis.com/token", StringComparison.Ordinal)
+            ? "{\"access_token\":\"gmc-test-token\",\"expires_in\":3600}"
+            : "{\"products\":[{\"name\":\"accounts/5308690318/products/en~PL~sku-1\",\"offerId\":\"sku-1\",\"contentLanguage\":\"en\",\"feedLabel\":\"PL\",\"dataSource\":\"accounts/5308690318/dataSources/1\",\"productAttributes\":{\"title\":\"Read-only GMC product\"},\"archived\":false}],\"nextPageToken\":\"next\"}";
+        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json")
+        });
+    }
 }
 
 sealed class FakeHandler : HttpMessageHandler
@@ -449,6 +546,8 @@ sealed class FakeHandler : HttpMessageHandler
                 ? "{\"verification_status\":\"SUCCESS\"}"
             : LastUrl.Contains("api.openai.com")
                 ? "{\"output\":[{\"content\":[{\"type\":\"output_text\",\"text\":\"Review fulfillment.\"}]}]}"
+            : LastUrl.Contains("/capture")
+                ? "{\"id\":\"CAPTURE-1\",\"status\":\"COMPLETED\"}"
             : "{\"id\":\"SANDBOX-ORDER\",\"status\":\"COMPLETED\"}";
         return new HttpResponseMessage(HttpStatusCode.OK)
         {
@@ -520,4 +619,30 @@ sealed class IdempotentPaymentProvider : PayPal360.Contracts.Providers.IPaymentP
     }
 
     public Task<PayPal360.Contracts.ProviderResult> CaptureOrder(string providerId, CancellationToken ct) => throw new NotImplementedException();
+}
+
+sealed class FakeRefundProvider : IRefundProvider
+{
+    public bool ReturnPending
+    {
+        get; set;
+    }
+    public ProviderActionRequest? LastRequest
+    {
+        get; private set;
+    }
+
+    public Task<ProviderActionResult> RefundAsync(ProviderActionRequest request, CancellationToken cancellationToken)
+    {
+        LastRequest = request;
+        return Task.FromResult(new ProviderActionResult(
+            ReturnPending ? "PENDING" : "COMPLETED",
+            "REFUND-1",
+            request.IdempotencyKey,
+            ReturnPending,
+            ReturnPending ? "Provider outcome requires reconciliation." : "Refund completed."));
+    }
+
+    public Task<ProviderReconciliationResult> ReconcileRefundAsync(ProviderReconciliationRequest request, CancellationToken cancellationToken)
+        => Task.FromResult(new ProviderReconciliationResult("COMPLETED", request.ProviderReference, true, "Provider lookup confirmed the refund."));
 }

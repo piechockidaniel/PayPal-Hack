@@ -8,5 +8,10 @@ data/
 /.vs/**
 /design
 /graphify-out
+/\.playwright-cli/
 /Format-Solution.ps1
 /ROADMAP.md
+/devpost/
+/DEMO-RECORDING.md
+/NEXT-PHASE-PLAN.md
+/PayPal360.csproj.user

@@ -100,7 +100,8 @@ public sealed class CheckoutCoordinator(IPaymentProvider provider, CommerceDatab
                 if (current.OrderId is not null)
                     return (state.Orders.Single(order => order.Id == current.OrderId), false);
                 var orderStatus = result.Status.Equals("COMPLETED", StringComparison.OrdinalIgnoreCase) ? "PAID" : "CREATED";
-                var order = new Order(Guid.NewGuid().ToString("N"), product.Id, product.Name, product.Price, product.Currency, result.Id, orderStatus, current.TenantId);
+                var order = new Order(Guid.NewGuid().ToString("N"), product.Id, product.Name, product.Price, product.Currency, result.Id, orderStatus, current.TenantId,
+                    orderStatus == "PAID" ? result.CaptureId : null);
                 state.Orders.Add(order);
                 state.CheckoutAttempts[index] = current with
                 {
@@ -151,7 +152,8 @@ public sealed class CheckoutCoordinator(IPaymentProvider provider, CommerceDatab
                 if (current.OrderId is not null)
                     return state.Orders.Single(order => order.Id == current.OrderId);
                 var status = authoritative.Status.Equals("COMPLETED", StringComparison.OrdinalIgnoreCase) ? "PAID" : "CREATED";
-                var order = new Order(Guid.NewGuid().ToString("N"), current.Product.Id, current.Product.Name, current.Product.Price, current.Product.Currency, authoritative.Id, status, current.TenantId);
+                var order = new Order(Guid.NewGuid().ToString("N"), current.Product.Id, current.Product.Name, current.Product.Price, current.Product.Currency, authoritative.Id, status, current.TenantId,
+                    status == "PAID" ? authoritative.CaptureId : null);
                 state.Orders.Add(order);
                 state.CheckoutAttempts[index] = current with
                 {

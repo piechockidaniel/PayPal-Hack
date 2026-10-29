@@ -17,6 +17,7 @@ using PayPal360.Contracts.Exceptions;
 using PayPal360.Contracts.Providers;
 
 var builder = WebApplication.CreateBuilder(args);
+var configuredWebhookHost = (builder.Configuration["PAYPAL360_WEBHOOK_HOST"] ?? "").Trim();
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton(new CommerceDatabase(Path.Combine(builder.Environment.ContentRootPath, "data")));
 builder.Services.AddSingleton<DemoStore>();
@@ -28,6 +29,9 @@ builder.Services.AddSingleton<AuditTrustAnchor>();
 builder.Services.AddSingleton<IProductCatalog, DemoCatalog>();
 builder.Services.AddSingleton<PayPalSandboxProvider>();
 builder.Services.AddSingleton<IPaymentProvider>(services => services.GetRequiredService<PayPalSandboxProvider>());
+builder.Services.AddSingleton<IRefundProvider>(services => services.GetRequiredService<PayPalSandboxProvider>());
+builder.Services.AddSingleton<GmcCatalogProvider>();
+builder.Services.AddSingleton<IReadOnlyCatalogChannel>(services => services.GetRequiredService<GmcCatalogProvider>());
 builder.Services.AddSingleton<CheckoutCoordinator>();
 builder.Services.AddSingleton<AiReview>();
 builder.Services.AddSingleton<PayPalWebhookQueue>();
@@ -72,12 +76,17 @@ builder.Services.AddRateLimiter(options => options.AddPolicy("login", context =>
 var app = builder.Build();
 // Initialize the administrator from environment variables only on an empty database.
 _ = app.Services.GetRequiredService<LocalAuth>();
-// This prototype is intentionally local-only, even if a broader URL is configured.
+// The application remains local-only except for the explicitly configured
+// PayPal webhook host. The webhook still has to arrive from the local reverse
+// proxy/tunnel, so the remote address must remain loopback.
 app.Use(async (context, next) =>
 {
     var hostName = context.Request.Host.Host;
     var remoteAddress = context.Connection.RemoteIpAddress;
-    if (!(hostName.Equals("localhost", StringComparison.OrdinalIgnoreCase) || hostName == "127.0.0.1" || hostName == "::1" || hostName == "[::1]") ||
+    var isPayPalWebhook = context.Request.Path == "/api/webhooks/paypal";
+    var isLocalHost = hostName.Equals("localhost", StringComparison.OrdinalIgnoreCase) || hostName == "127.0.0.1" || hostName == "::1" || hostName == "[::1]";
+    var isConfiguredWebhookHost = isPayPalWebhook && !string.IsNullOrWhiteSpace(configuredWebhookHost) && hostName.Equals(configuredWebhookHost, StringComparison.OrdinalIgnoreCase);
+    if (!(isLocalHost || isConfiguredWebhookHost) ||
         (remoteAddress is not null && !IPAddress.IsLoopback(remoteAddress.IsIPv4MappedToIPv6 ? remoteAddress.MapToIPv4() : remoteAddress)))
     {
         context.Response.StatusCode = StatusCodes.Status403Forbidden;
@@ -239,17 +248,70 @@ app.MapGet("/api/status", (IConfiguration c, LocalAuth auth) => new
     operatorConfigured = auth.IsConfigured(),
     environment = "PayPal sandbox only"
 });
-app.MapGet("/api/connectors", (IConfiguration c) => new[] {
-    new { role = "Catalog", provider = "Local demo catalog", status = "available", detail = "Read-only sample data" },
-    new { role = "Payments", provider = "PayPal Orders API", status = string.IsNullOrWhiteSpace(c["PAYPAL_CLIENT_ID"]) || string.IsNullOrWhiteSpace(c["PAYPAL_CLIENT_SECRET"]) ? "not-configured" : "configured-not-verified", detail = "Sandbox only; verify with a test checkout" },
-    new { role = "Invoicing", provider = "PayPal", status = "unverified", detail = "Adapter not implemented" },
-    new { role = "Product channel", provider = "Google Merchant Center", status = "unverified", detail = "Adapter not implemented" },
-    new { role = "Shipping", provider = "Unassigned", status = "unavailable", detail = "No connector configured" },
-    new { role = "Payments", provider = "Stripe", status = "unavailable", detail = "Optional adapter not implemented" },
-    new { role = "Storefront", provider = "WooCommerce", status = "unavailable", detail = "Optional adapter not implemented" },
-    new { role = "Marketplace", provider = "Allegro", status = "unavailable", detail = "Optional adapter not implemented" }
+app.MapGet("/api/connectors", (HttpContext context, IConfiguration c, CommerceDatabase database) =>
+{
+    var tenantId = Tenant(context);
+    var verifications = database.Read(state => state.ConnectorVerifications
+        .Where(item => string.Equals(item.TenantId ?? "local", tenantId, StringComparison.Ordinal))
+        .ToDictionary(item => item.ConnectorId, StringComparer.Ordinal));
+    var paypalConfigured = !string.IsNullOrWhiteSpace(c["PAYPAL_CLIENT_ID"]) && !string.IsNullOrWhiteSpace(c["PAYPAL_CLIENT_SECRET"]);
+    var gmcConfigured = !string.IsNullOrWhiteSpace(c["GMC_MERCHANT_ACCOUNT_ID"]) && !string.IsNullOrWhiteSpace(c["GMC_SERVICE_ACCOUNT_JSON"] ?? c["GOOGLE_APPLICATION_CREDENTIALS"]);
+    string Status(string id, bool configured) => !configured ? "not-configured" : verifications.TryGetValue(id, out var check) ? check.Status : "configured-not-verified";
+    string Detail(string id, string fallback) => verifications.TryGetValue(id, out var check) ? check.Detail + " Checked " + check.CheckedAt.ToLocalTime().ToString("g") + "." : fallback;
+    return new[] {
+        new { id = "local-catalog", role = "Catalog", provider = "Local demo catalog", status = "available", detail = "Read-only sample data", canVerify = false },
+        new { id = "paypal", role = "Payments", provider = "PayPal Orders API", status = Status("paypal", paypalConfigured), detail = Detail("paypal", "Sandbox credentials are configured; use Verify to test OAuth without creating an order."), canVerify = true },
+        new { id = "paypal-invoicing", role = "Invoicing", provider = "PayPal", status = "unverified", detail = "Adapter not implemented", canVerify = false },
+        new { id = "gmc", role = "Product channel", provider = "Google Merchant Center", status = Status("gmc", gmcConfigured), detail = Detail("gmc", "Read-only processed-product connector; local catalog, price, inventory, orders and tenant ownership remain authoritative."), canVerify = true },
+        new { id = "shipping", role = "Shipping", provider = "Unassigned", status = "unavailable", detail = "No connector configured", canVerify = false },
+        new { id = "stripe", role = "Payments", provider = "Stripe", status = "unavailable", detail = "Optional adapter not implemented", canVerify = false },
+        new { id = "woocommerce", role = "Storefront", provider = "WooCommerce", status = "unavailable", detail = "Optional adapter not implemented", canVerify = false },
+        new { id = "allegro", role = "Marketplace", provider = "Allegro", status = "unavailable", detail = "Optional adapter not implemented", canVerify = false }
+    };
+});
+app.MapPost("/api/connectors/{connector}/verify", async (string connector, HttpContext context, LocalAuth auth, IdentityDefinitions identities, PayPalSandboxProvider paypal, IReadOnlyCatalogChannel gmc, CommerceDatabase database, CancellationToken ct) =>
+{
+    var tenantId = Tenant(context);
+    var isPayPal = connector.Equals("paypal", StringComparison.OrdinalIgnoreCase);
+    var isGmc = connector.Equals("gmc", StringComparison.OrdinalIgnoreCase);
+    if (!isPayPal && !isGmc)
+        return Results.NotFound(new
+        {
+            error = "This connector does not have an internal verifier."
+        });
+    if ((isPayPal && !HasPermission(context, auth, identities, "read_orders")) ||
+        (isGmc && !HasPermission(context, auth, identities, "read_catalog")))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+
+    var connectorId = isPayPal ? "paypal" : "gmc";
+    try
+    {
+        var detail = isPayPal
+            ? await paypal.VerifyConnectionAsync(ct)
+            : await VerifyGmcAsync(gmc, tenantId, ct);
+        var verification = SaveConnectorVerification(database, connectorId, tenantId, "verified", detail, context);
+        return Results.Ok(verification);
+    }
+    catch (Exception e) when (e is ProviderException or JsonException or IOException or CryptographicException)
+    {
+        var verification = SaveConnectorVerification(database, connectorId, tenantId, "verification-failed", "Verification failed: " + e.Message, context);
+        return Results.Ok(verification);
+    }
 });
 app.MapGet("/api/products", (IProductCatalog catalog) => catalog.List());
+app.MapGet("/api/connectors/gmc/products", async (HttpContext context, LocalAuth auth, IdentityDefinitions identities, IReadOnlyCatalogChannel channel, string? pageToken, int? pageSize, CancellationToken ct) =>
+{
+    if (!HasPermission(context, auth, identities, "read_catalog"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    try
+    {
+        return Results.Ok(await channel.ListProductsAsync(Tenant(context), pageToken, pageSize ?? 25, ct));
+    }
+    catch (ProviderException e)
+    {
+        return Results.Problem(e.Message, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
 app.MapPost("/api/webhooks/paypal", async (HttpRequest request, IConfiguration configuration, PayPalSandboxProvider provider, PayPalWebhookQueue queue, CancellationToken ct) =>
 {
     var webhookId = configuration["PAYPAL_WEBHOOK_ID"];
@@ -376,7 +438,7 @@ app.MapPost("/api/actions/{action}", async (string action, ActionRequestInput bo
     try
     {
         var result = await actions.RequestAsync(action, body.ResourceId!.Trim(), Actor(request.HttpContext), body.Reason!.Trim(), tenantId,
-            request.HttpContext.User.FindFirstValue("agent_id") is null, ct);
+            request.HttpContext.User.FindFirstValue("agent_id") is null, ct, body.Amount);
         return ActionResponse(result);
     }
     catch (ArgumentException e) { return Results.BadRequest(new { error = e.Message }); }
@@ -397,6 +459,22 @@ app.MapPost("/api/actions/{id}/decision", async (string id, ActionDecisionReques
     }
     catch (InvalidOperationException e) { return Results.Conflict(new { error = e.Message }); }
     catch (ArgumentException e) { return Results.BadRequest(new { error = e.Message }); }
+});
+app.MapPost("/api/actions/{id}/reconcile", async (string id, ActionReconcileRequest body, HttpRequest request, LocalAuth auth, IdentityDefinitions identities, CommerceActionService actions, CancellationToken ct) =>
+{
+    if (request.HttpContext.User.FindFirstValue("agent_id") is not null || !HasPermission(request.HttpContext, auth, identities, "execute_actions"))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (!ValidReason(body.Reason))
+        return Results.BadRequest(new
+        {
+            error = "A reconciliation reason is required."
+        });
+    try
+    {
+        var result = await actions.ReconcileAsync(id, Actor(request.HttpContext), body.Reason!.Trim(), Tenant(request.HttpContext), ct);
+        return ActionResponse(result);
+    }
+    catch (InvalidOperationException e) { return Results.Conflict(new { error = e.Message }); }
 });
 
 app.MapGet("/api/roles", (HttpContext context, LocalAuth auth, IdentityDefinitions definitions) =>
@@ -561,7 +639,7 @@ app.MapPost("/api/checkout/{id}/capture", async (string id, HttpRequest request,
             {
                 var authoritative = await provider.GetOrder(order.ProviderOrderId, ct);
                 if (authoritative.Status.Equals("COMPLETED", StringComparison.OrdinalIgnoreCase))
-                    return Results.Ok(store.MarkPaid(id));
+                    return Results.Ok(store.MarkPaid(id, "local", authoritative.CaptureId ?? authoritative.Id));
                 result = authoritative;
             }
             catch (NotSupportedException) { }
@@ -571,7 +649,7 @@ app.MapPost("/api/checkout/{id}/capture", async (string id, HttpRequest request,
                 error = "Payment is not completed: " + result.Status
             });
         }
-        var updated = store.MarkPaid(id);
+        var updated = store.MarkPaid(id, "local", result.CaptureId ?? result.Id);
         return Results.Ok(updated);
     }
     catch (ProviderException e)
@@ -580,7 +658,7 @@ app.MapPost("/api/checkout/{id}/capture", async (string id, HttpRequest request,
         {
             var authoritative = await provider.GetOrder(order.ProviderOrderId, ct);
             if (authoritative.Status.Equals("COMPLETED", StringComparison.OrdinalIgnoreCase))
-                return Results.Ok(store.MarkPaid(id));
+                return Results.Ok(store.MarkPaid(id, "local", authoritative.CaptureId ?? authoritative.Id));
         }
         catch (NotSupportedException) { }
         catch (ProviderException) { }
@@ -731,6 +809,19 @@ static IReadOnlyList<string>? ResourceScope(HttpContext context, IdentityDefinit
     return agentId is null ? null : identities.FindAgent(agentId)?.ResourceScope;
 }
 static bool ValidReason(string? reason) => (reason ?? "").Trim().Length is >= 1 and <= 500;
+static async Task<string> VerifyGmcAsync(IReadOnlyCatalogChannel channel, string tenantId, CancellationToken ct)
+{
+    var page = await channel.ListProductsAsync(tenantId, null, 1, ct);
+    return "Google Merchant API read-only product check returned " + page.Products.Count + " processed product(s).";
+}
+static ConnectorVerification SaveConnectorVerification(CommerceDatabase database, string connectorId, string tenantId, string status, string detail, HttpContext context) => database.Update(state =>
+{
+    var verification = new ConnectorVerification(connectorId, status, detail, DateTimeOffset.UtcNow, tenantId);
+    state.ConnectorVerifications.RemoveAll(item => item.ConnectorId == connectorId && string.Equals(item.TenantId ?? "local", tenantId, StringComparison.Ordinal));
+    state.ConnectorVerifications.Add(verification);
+    CommerceDatabase.Record(state, "-", status == "verified" ? "connector.verified" : "connector.verification_failed", Actor(context), detail, connectorId, connectorId, null, tenantId);
+    return verification;
+});
 static bool AllowedOrigin(string origin)
 {
     return Uri.TryCreate(origin, UriKind.Absolute, out var uri) &&
@@ -755,15 +846,19 @@ static bool TryParsePayPalProviderEvent(JsonElement root, out ProviderEvent? pro
     var providerOrderId = orderIdElement.GetString();
     if (string.IsNullOrWhiteSpace(providerOrderId))
         return false;
-    providerEvent = new ProviderEvent(eventId, providerOrderId, isCompleted ? "COMPLETED" : "DENIED", DateTimeOffset.UtcNow);
+    string? captureId = isCompleted && resource.TryGetProperty("id", out var captureIdElement)
+        ? captureIdElement.GetString()
+        : null;
+    providerEvent = new ProviderEvent(eventId, providerOrderId, isCompleted ? "COMPLETED" : "DENIED", DateTimeOffset.UtcNow, "local", captureId);
     return true;
 }
 record CreateRoleRequest(string? Name, string? Kind, string[]? Permissions, string? Operator, string? Reason);
 record CreateAgentRequest(string? Name, string? RoleId, string? ParentId, string? Operator, string? Reason, string[]? ResourceScope);
 
 record PolicyUpdateRequest(string? Mode, string? Reason);
-record ActionRequestInput(string? ResourceId, string? Reason);
+record ActionRequestInput(string? ResourceId, string? Reason, decimal? Amount = null);
 record ActionDecisionRequest(string? Decision, string? Reason);
+record ActionReconcileRequest(string? Reason);
 record ReviewRequest(string? AgentId);
 record LoginRequest(string? Username, string? Password);
 record CheckoutRequest(string ProductId, string? RequestId);
