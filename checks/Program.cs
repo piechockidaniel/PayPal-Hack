@@ -35,6 +35,8 @@ Check(
         && catalog.Find("missing") is null,
     "catalog resolves only known products"
 );
+var placeholderConfiguration = new ConfigurationBuilder().AddJsonFile(Path.Combine(AppContext.BaseDirectory, "appsettings.json"), optional: true).Build();
+Check(AppConfiguration.DataDirectory(placeholderConfiguration) is null, "data directory placeholder is not treated as a configured path");
 
 var draftProviderAction = new ProviderActionRequest(
     CommerceProviderActions.RefundPayment,

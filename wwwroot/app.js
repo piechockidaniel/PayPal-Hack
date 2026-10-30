@@ -267,7 +267,7 @@ async function checkoutGmc(product) {
   return checkoutWithSource({id:'gmc-'+product.offerId,name:product.title||product.offerId,price:product.price,currency:product.currency},{offerId:product.offerId});
 }
 async function checkoutWithSource(product,source) {
-  selectedProduct=product;checkoutOrder=null;const checkoutStorageKey='paypal360.checkout.'+(source?'gmc.'+source.offerId:product.id);const checkoutRequestId=sessionStorage.getItem(checkoutStorageKey)||crypto.randomUUID();sessionStorage.setItem(checkoutStorageKey,checkoutRequestId);byId('checkout').hidden=false;byId('checkoutProduct').textContent=product.name+' - '+money(product.price,product.currency)+(source?' · GMC read-only snapshot':'');clear(byId('paypalButtons'));
+  selectedProduct=product;checkoutOrder=null;const checkoutStorageKey='paypal360.checkout.'+(source?'gmc.'+source.offerId:product.id);const checkoutRequestId=sessionStorage.getItem(checkoutStorageKey)||crypto.randomUUID();sessionStorage.setItem(checkoutStorageKey,checkoutRequestId);const checkoutPanel=byId('checkout');checkoutPanel.hidden=false;byId('checkoutProduct').textContent=product.name+' - '+money(product.price,product.currency)+(source?' · GMC read-only snapshot':'');clear(byId('paypalButtons'));checkoutPanel.scrollIntoView({behavior:'smooth',block:'start'});byId('closeCheckout').focus();
   try {
     if(!window.paypal)await new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://www.paypal.com/sdk/js?client-id='+encodeURIComponent(state.clientId)+'&currency='+encodeURIComponent(product.currency);script.onload=resolve;script.onerror=()=>reject(Error('Could not load PayPal checkout.'));document.head.append(script)});
     window.paypal.Buttons({

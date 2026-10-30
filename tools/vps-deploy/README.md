@@ -9,6 +9,7 @@ OpenLiteSpeed HTTPS vhost.
 - release root: `/opt/paypal360/releases/`
 - active release: `/opt/paypal360/current`
 - persistent data: `/var/lib/paypal360/data`
+- persistent data setting: `Data__PAYPAL360_DATA_DIRECTORY=/var/lib/paypal360/data`
 - systemd environment file: `/etc/paypal360/paypal360.env`
 - data-protection certificate: `/etc/paypal360/paypal360-data-protection.pfx`
 - loopback listener: `127.0.0.1:16492`

@@ -8,6 +8,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="checks/**/*.cs;integration-checks/**/*.cs;PayPal360.Contracts/**/*.cs" />
+    <Content Remove="data/**" />
+    <None Remove="data/**" />
     <ProjectReference Include="PayPal360.Contracts/PayPal360.Contracts.csproj" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
     <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />

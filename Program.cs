@@ -23,8 +23,14 @@ if (builder.Environment.IsDevelopment())
 var configuredWebhookHost = AppConfiguration.PayPalWebhookHost(builder.Configuration) ?? "";
 var configuredPublicHost = AppConfiguration.PublicHost(builder.Configuration) ?? "";
 var publicHostingEnabled = !string.IsNullOrWhiteSpace(configuredPublicHost);
+var configuredDataDirectory = AppConfiguration.DataDirectory(builder.Configuration);
+var dataDirectory = string.IsNullOrWhiteSpace(configuredDataDirectory)
+    ? Path.Combine(builder.Environment.ContentRootPath, "data")
+    : Path.IsPathRooted(configuredDataDirectory)
+        ? configuredDataDirectory
+        : Path.GetFullPath(configuredDataDirectory, builder.Environment.ContentRootPath);
 builder.Services.AddHttpClient();
-builder.Services.AddSingleton(new CommerceDatabase(Path.Combine(builder.Environment.ContentRootPath, "data")));
+builder.Services.AddSingleton(new CommerceDatabase(dataDirectory));
 builder.Services.AddSingleton<DemoStore>();
 builder.Services.AddSingleton<IdentityDefinitions>();
 builder.Services.AddSingleton<PolicyManager>();
@@ -43,7 +49,7 @@ builder.Services.AddSingleton<PayPalWebhookQueue>();
 builder.Services.AddHostedService<PayPalWebhookWorker>();
 builder.Services.ConfigureHttpJsonOptions(o => o.SerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
 builder.Services.AddSingleton<LocalAuth>();
-var keyDirectory = Directory.CreateDirectory(Path.Combine(builder.Environment.ContentRootPath, "data", "keys"));
+var keyDirectory = Directory.CreateDirectory(Path.Combine(dataDirectory, "keys"));
 var dataProtection = builder.Services.AddDataProtection().PersistKeysToFileSystem(keyDirectory);
 var protectionCertificatePath = AppConfiguration.DataProtectionCertificatePath(builder.Configuration);
 if (!string.IsNullOrWhiteSpace(protectionCertificatePath))
