@@ -16,9 +16,13 @@ const titles = {
   connectors: ['Connectors','Provider roles and verification status']
 };
 function notify(text) { const n=byId('notice'); n.textContent=text; n.hidden=false; }
-async function api(url,options) {
+async function api(url,options,retryCsrf=true) {
   const requestOptions = options ? { ...options, headers: { ...(options.headers || {}), ...((options.method && options.method !== "GET") ? { "X-CSRF-Token": csrfToken } : {}) } } : undefined;
   const response=await fetch(url,requestOptions); const body=await response.json().catch(()=>({}));
+  if (retryCsrf && response.status === 400 && body.error === 'Invalid or missing request verification token.') {
+    await refreshCsrf();
+    return api(url, options, false);
+  }
   if (!response.ok) {
     if (response.status === 401 && url !== '/api/auth/login' && url !== '/api/auth/session') { byId('logoutButton').hidden = true; void startSession(); }
     throw Error(body.error || body.detail || 'Request failed ('+response.status+').');

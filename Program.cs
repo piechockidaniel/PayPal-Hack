@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
 
 using System.Security.Cryptography;
@@ -20,6 +21,8 @@ var builder = WebApplication.CreateBuilder(args);
 if (builder.Environment.IsDevelopment())
     builder.Configuration.AddUserSecrets<Program>(optional: true, reloadOnChange: false);
 var configuredWebhookHost = AppConfiguration.PayPalWebhookHost(builder.Configuration) ?? "";
+var configuredPublicHost = AppConfiguration.PublicHost(builder.Configuration) ?? "";
+var publicHostingEnabled = !string.IsNullOrWhiteSpace(configuredPublicHost);
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton(new CommerceDatabase(Path.Combine(builder.Environment.ContentRootPath, "data")));
 builder.Services.AddSingleton<DemoStore>();
@@ -58,7 +61,7 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
     options.Cookie.Name = "PayPal360.Session";
     options.Cookie.HttpOnly = true;
     options.Cookie.SameSite = SameSiteMode.Strict;
-    options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+    options.Cookie.SecurePolicy = publicHostingEnabled ? CookieSecurePolicy.Always : CookieSecurePolicy.SameAsRequest;
     options.ExpireTimeSpan = TimeSpan.FromHours(4);
     options.SlidingExpiration = false;
     options.Events.OnValidatePrincipal = context =>
@@ -70,7 +73,16 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
     };
 });
 builder.Services.AddAuthorization();
-builder.Services.AddAntiforgery(options => options.HeaderName = "X-CSRF-Token");
+builder.Services.AddAntiforgery(options =>
+{
+    options.HeaderName = "X-CSRF-Token";
+    options.Cookie.SecurePolicy = publicHostingEnabled ? CookieSecurePolicy.Always : CookieSecurePolicy.SameAsRequest;
+});
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedProto;
+    options.KnownProxies.Add(IPAddress.Loopback);
+});
 builder.Services.AddRateLimiter(options => options.AddPolicy("login", context =>
     RateLimitPartition.GetFixedWindowLimiter(context.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ =>
         new FixedWindowRateLimiterOptions { PermitLimit = 5, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 })));
@@ -79,9 +91,12 @@ var app = builder.Build();
 // Initialize the administrator from configured local User Secrets (or the
 // deployment environment fallback) only on an empty database.
 _ = app.Services.GetRequiredService<LocalAuth>();
-// The application remains local-only except for the explicitly configured
-// PayPal webhook host. The webhook still has to arrive from the local reverse
-// proxy/tunnel, so the remote address must remain loopback.
+// Forwarded HTTPS is trusted only from the loopback reverse proxy. X-Forwarded-For
+// is deliberately not enabled so the host guard continues to see the immediate
+// trusted proxy address rather than an untrusted client-supplied value.
+app.UseForwardedHeaders();
+// The application remains local-only unless an explicit public host is configured.
+// Public hosting still requires the reverse proxy to connect over loopback.
 app.Use(async (context, next) =>
 {
     var hostName = context.Request.Host.Host;
@@ -89,7 +104,8 @@ app.Use(async (context, next) =>
     var isPayPalWebhook = context.Request.Path == "/api/webhooks/paypal";
     var isLocalHost = hostName.Equals("localhost", StringComparison.OrdinalIgnoreCase) || hostName == "127.0.0.1" || hostName == "::1" || hostName == "[::1]";
     var isConfiguredWebhookHost = isPayPalWebhook && !string.IsNullOrWhiteSpace(configuredWebhookHost) && hostName.Equals(configuredWebhookHost, StringComparison.OrdinalIgnoreCase);
-    if (!(isLocalHost || isConfiguredWebhookHost) ||
+    var isConfiguredPublicHost = publicHostingEnabled && hostName.Equals(configuredPublicHost, StringComparison.OrdinalIgnoreCase);
+    if (!(isLocalHost || isConfiguredWebhookHost || isConfiguredPublicHost) ||
         (remoteAddress is not null && !IPAddress.IsLoopback(remoteAddress.IsIPv4MappedToIPv6 ? remoteAddress.MapToIPv4() : remoteAddress)))
     {
         context.Response.StatusCode = StatusCodes.Status403Forbidden;
@@ -165,7 +181,7 @@ app.Use(async (context, next) =>
         }
         var isAgentBearer = context.User.Identity?.AuthenticationType == "AgentBearer";
         var isMutation = HttpMethods.IsPost(context.Request.Method) || HttpMethods.IsPut(context.Request.Method) || HttpMethods.IsDelete(context.Request.Method);
-        if (isMutation && context.Request.Headers.Origin.Count > 0 && !AllowedOrigin(context.Request.Headers.Origin.ToString()))
+        if (isMutation && context.Request.Headers.Origin.Count > 0 && !AllowedOrigin(context.Request.Headers.Origin.ToString(), configuredPublicHost))
         {
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
             await context.Response.WriteAsJsonAsync(new
@@ -828,10 +844,11 @@ static ConnectorVerification SaveConnectorVerification(CommerceDatabase database
     CommerceDatabase.Record(state, "-", status == "verified" ? "connector.verified" : "connector.verification_failed", Actor(context), detail, connectorId, connectorId, null, tenantId);
     return verification;
 });
-static bool AllowedOrigin(string origin)
+static bool AllowedOrigin(string origin, string configuredPublicHost)
 {
     return Uri.TryCreate(origin, UriKind.Absolute, out var uri) &&
-        (uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase) || uri.Host == "127.0.0.1" || uri.Host == "::1");
+        (uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase) || uri.Host == "127.0.0.1" || uri.Host == "::1" ||
+         (!string.IsNullOrWhiteSpace(configuredPublicHost) && uri.Host.Equals(configuredPublicHost, StringComparison.OrdinalIgnoreCase)));
 }
 static bool TryParsePayPalProviderEvent(JsonElement root, out ProviderEvent? providerEvent)
 {

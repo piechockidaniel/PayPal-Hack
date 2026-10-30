@@ -123,10 +123,12 @@ var placeholderSettings = new ConfigurationBuilder()
         ["PayPal:PAYPAL_CLIENT_ID"] = "ChangeMe",
         ["PAYPAL_CLIENT_ID"] = "legacy-client",
         ["AgentAI:OPENAI_API_KEY"] = "your_openai_api_key",
-        ["OPENAI_API_KEY"] = "legacy-key"
+        ["OPENAI_API_KEY"] = "legacy-key",
+        ["Web:PAYPAL360_PUBLIC_HOST"] = "ChangeMe",
+        ["PAYPAL360_PUBLIC_HOST"] = "demo.example"
     })
     .Build();
-Check(AppConfiguration.PayPalClientId(placeholderSettings) == "legacy-client" && AppConfiguration.OpenAiApiKey(placeholderSettings) == "legacy-key", "configuration placeholders are treated as unset");
+Check(AppConfiguration.PayPalClientId(placeholderSettings) == "legacy-client" && AppConfiguration.OpenAiApiKey(placeholderSettings) == "legacy-key" && AppConfiguration.PublicHost(placeholderSettings) == "demo.example", "configuration placeholders are treated as unset");
 
 var prioritySettings = new ConfigurationBuilder()
     .AddInMemoryCollection(new Dictionary<string, string?>

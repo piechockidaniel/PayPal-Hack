@@ -264,15 +264,35 @@ public sealed class AiReview(IHttpClientFactory clients, IConfiguration config)
                             type = "object",
                             properties = new
                             {
-                                recommendation = new { type = "string" },
+                                recommendation = new
+                                {
+                                    type = "string"
+                                },
                                 category = new
                                 {
                                     type = "string",
                                     @enum = new[] { "manual_follow_up", "payment_review", "inventory_review", "no_action" }
                                 },
-                                confidence = new { type = "number" },
-                                evidence = new { type = "array", items = new { type = "string" } },
-                                risk_flags = new { type = "array", items = new { type = "string" } }
+                                confidence = new
+                                {
+                                    type = "number"
+                                },
+                                evidence = new
+                                {
+                                    type = "array",
+                                    items = new
+                                    {
+                                        type = "string"
+                                    }
+                                },
+                                risk_flags = new
+                                {
+                                    type = "array",
+                                    items = new
+                                    {
+                                        type = "string"
+                                    }
+                                }
                             },
                             required = new[] { "recommendation", "category", "confidence", "evidence", "risk_flags" },
                             additionalProperties = false

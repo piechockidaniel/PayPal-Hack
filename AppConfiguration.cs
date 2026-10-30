@@ -38,6 +38,7 @@ public static class AppConfiguration
     public static string? PayPalClientSecret(IConfiguration configuration) => Get(configuration, "PayPal", "PAYPAL_CLIENT_SECRET");
     public static string? PayPalWebhookId(IConfiguration configuration) => GetTrimmed(configuration, "PayPal", "PAYPAL_WEBHOOK_ID");
     public static string? PayPalWebhookHost(IConfiguration configuration) => GetTrimmed(configuration, "PayPal", "PAYPAL360_WEBHOOK_HOST");
+    public static string? PublicHost(IConfiguration configuration) => GetTrimmed(configuration, "Web", "PAYPAL360_PUBLIC_HOST");
 
     public static string? OpenAiApiKey(IConfiguration configuration) => Get(configuration, "AgentAI", "OPENAI_API_KEY");
     public static string? OpenAiModel(IConfiguration configuration) => GetTrimmed(configuration, "AgentAI", "OPENAI_MODEL");
