@@ -126,7 +126,7 @@ public sealed class DemoStore(CommerceDatabase database)
         return task;
     });
 
-    public Proposal? AddProposal(string id, string reason, string requestedBy, string agentActor) => database.Update<Proposal?>(state =>
+    public Proposal? AddProposal(string id, string reason, string requestedBy, string agentActor, AiReviewSuggestion? review = null) => database.Update<Proposal?>(state =>
     {
         var paidOrder = state.Orders.FirstOrDefault(order => order.Id == id && order.Status == "PAID");
         if (paidOrder is null)
@@ -138,10 +138,24 @@ public sealed class DemoStore(CommerceDatabase database)
             CommerceDatabase.Record(state, id, "policy.denied", agentActor, "Agent follow-up denied by policy mode " + policy.Mode + ".", "gatekeeper", PolicyManager.FollowUpAction, policyVersion, paidOrder.TenantId);
             return null;
         }
-        var proposal = new Proposal(Guid.NewGuid().ToString("N"), id, reason, policy.Mode == "automatic" ? "TASK_CREATED" : "PENDING", policy.Version, paidOrder.TenantId);
+        var recommendation = review?.Recommendation ?? reason;
+        var proposal = new Proposal(
+            Guid.NewGuid().ToString("N"),
+            id,
+            recommendation,
+            policy.Mode == "automatic" ? "TASK_CREATED" : "PENDING",
+            policy.Version,
+            paidOrder.TenantId,
+            review?.Category,
+            review?.Confidence,
+            review?.Evidence,
+            review?.RiskFlags,
+            review?.Provider,
+            review?.Model,
+            review?.PromptVersion);
         state.Proposals.Add(proposal);
         CommerceDatabase.Record(state, id, "review.requested", requestedBy, "Requested an AI review.", "local-auth", proposal.Id, null, paidOrder.TenantId);
-        CommerceDatabase.Record(state, id, "proposal.created", agentActor, "AI proposed an internal follow-up: " + reason, "openai", proposal.Id, null, paidOrder.TenantId);
+        CommerceDatabase.Record(state, id, "proposal.created", agentActor, "AI proposed an internal follow-up: " + recommendation, review?.Provider ?? "openai", proposal.Id, null, paidOrder.TenantId);
         CommerceDatabase.Record(state, id, "policy.evaluated", "gatekeeper", "Follow-up policy decision: " + policy.Mode + ".", "gatekeeper", proposal.Id, policyVersion, paidOrder.TenantId);
         if (policy.Mode == "automatic")
         {

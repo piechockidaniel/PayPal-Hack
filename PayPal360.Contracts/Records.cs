@@ -2,7 +2,29 @@ namespace PayPal360.Contracts;
 
 public record Product(string Id, string Name, decimal Price, string Currency);
 public record Order(string Id, string ProductId, string ProductName, decimal Price, string Currency, string ProviderOrderId, string Status, string TenantId = "local", string? ProviderCaptureId = null);
-public record Proposal(string Id, string OrderId, string Reason, string Status, int PolicyVersion = 1, string TenantId = "local");
+public record AiReviewSuggestion(
+    string Recommendation,
+    string Category,
+    decimal Confidence,
+    IReadOnlyList<string> Evidence,
+    IReadOnlyList<string> RiskFlags,
+    string Provider,
+    string Model,
+    string PromptVersion);
+public record Proposal(
+    string Id,
+    string OrderId,
+    string Reason,
+    string Status,
+    int PolicyVersion = 1,
+    string TenantId = "local",
+    string? Category = null,
+    decimal? Confidence = null,
+    IReadOnlyList<string>? Evidence = null,
+    IReadOnlyList<string>? RiskFlags = null,
+    string? Provider = null,
+    string? Model = null,
+    string? PromptVersion = null);
 public record ProviderResult(string Id, string Status, string? CaptureId = null);
 
 public record CommerceInvoice(string ExternalId, string Status);

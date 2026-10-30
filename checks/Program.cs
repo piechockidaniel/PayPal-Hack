@@ -14,6 +14,20 @@ static void Check(bool ok, string message)
     Console.WriteLine("PASS " + message);
 }
 
+if (args.Any(arg => arg.Equals("--live-openai", StringComparison.OrdinalIgnoreCase)))
+{
+    var liveConfiguration = new ConfigurationBuilder()
+        .AddUserSecrets<AiReview>(optional: true)
+        .Build();
+    var liveAi = new AiReview(new LiveHttpClientFactory(), liveConfiguration);
+    var liveReview = await liveAi.Suggest(
+        new Order("live-ai-smoke", "synthetic", "Synthetic PayPal 360 smoke-test order", 1m, "PLN", "synthetic-provider-order", "PAID"),
+        CancellationToken.None);
+    Check(liveReview.Provider == "openai" && !string.IsNullOrWhiteSpace(liveReview.Model), "live OpenAI returned a structured review");
+    Console.WriteLine($"Live OpenAI smoke test passed: model={liveReview.Model}, category={liveReview.Category}, confidence={liveReview.Confidence:F2}");
+    return;
+}
+
 var catalog = new DemoCatalog();
 Check(
     catalog.List().Count == 2
@@ -173,10 +187,16 @@ Check(
 );
 
 var ai = new AiReview(clients, settings);
-var reason = await ai.Suggest(store.FindOrder(order.Id)!, CancellationToken.None);
+var review = await ai.Suggest(store.FindOrder(order.Id)!, CancellationToken.None);
 Check(
-    reason == "Review fulfillment." && handler.LastUrl == "https://api.openai.com/v1/responses",
-    "AI adapter extracts response text"
+    review.Recommendation == "Review fulfillment."
+        && review.Category == "manual_follow_up"
+        && review.Confidence == 0.92m
+        && review.Evidence.Single() == "Payment is captured."
+        && review.RiskFlags.Count == 0
+        && review.Provider == "openai"
+        && handler.LastUrl == "https://api.openai.com/v1/responses",
+    "AI adapter extracts and validates the structured response"
 );
 
 var gmcKeyPath = Path.Combine(testDirectory, "gmc-service-account.json");
@@ -529,6 +549,13 @@ sealed class FakeFactory(HttpMessageHandler handler) : IHttpClientFactory
     public HttpClient CreateClient(string name) => new(handler, false);
 }
 
+sealed class LiveHttpClientFactory : IHttpClientFactory
+{
+    private readonly HttpClient client = new() { Timeout = TimeSpan.FromSeconds(45) };
+
+    public HttpClient CreateClient(string name) => client;
+}
+
 sealed class GmcFakeHandler : HttpMessageHandler
 {
     public string LastUrl = "";
@@ -569,7 +596,7 @@ sealed class FakeHandler : HttpMessageHandler
             : LastUrl.Contains("verify-webhook-signature")
                 ? "{\"verification_status\":\"SUCCESS\"}"
             : LastUrl.Contains("api.openai.com")
-                ? "{\"output\":[{\"content\":[{\"type\":\"output_text\",\"text\":\"Review fulfillment.\"}]}]}"
+                ? StructuredAiResponse()
             : LastUrl.Contains("/capture")
                 ? "{\"id\":\"CAPTURE-1\",\"status\":\"COMPLETED\"}"
             : "{\"id\":\"SANDBOX-ORDER\",\"status\":\"COMPLETED\"}";
@@ -577,6 +604,25 @@ sealed class FakeHandler : HttpMessageHandler
         {
             Content = new StringContent(json, Encoding.UTF8, "application/json"),
         };
+    }
+
+    private static string StructuredAiResponse()
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            recommendation = "Review fulfillment.",
+            category = "manual_follow_up",
+            confidence = 0.92m,
+            evidence = new[] { "Payment is captured." },
+            risk_flags = Array.Empty<string>()
+        });
+        return JsonSerializer.Serialize(new
+        {
+            output = new[]
+            {
+                new { content = new[] { new { type = "output_text", text = payload } } }
+            }
+        });
     }
 }
 

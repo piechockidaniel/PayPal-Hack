@@ -248,6 +248,7 @@ app.MapGet("/api/status", (IConfiguration c, LocalAuth auth) => new
     paypal = !string.IsNullOrWhiteSpace(AppConfiguration.PayPalClientId(c)) && !string.IsNullOrWhiteSpace(AppConfiguration.PayPalClientSecret(c)),
     clientId = AppConfiguration.PayPalClientId(c) ?? "",
     ai = !string.IsNullOrWhiteSpace(AppConfiguration.OpenAiApiKey(c)) && !string.IsNullOrWhiteSpace(AppConfiguration.OpenAiModel(c)),
+    aiModel = AppConfiguration.OpenAiModel(c) ?? "",
     operatorConfigured = auth.IsConfigured(),
     environment = "PayPal sandbox only"
 });
@@ -717,17 +718,19 @@ app.MapPost("/api/orders/{id}/review", async (string id, ReviewRequest input, Ht
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     }
     audit.Write(id, "agent.access_allowed", Actor(request.HttpContext), "Agent has the required inherited permissions; the follow-up policy will be evaluated.", "gatekeeper", agent.Id, null, tenantId);
+    audit.Write(id, "ai.review.requested", Actor(request.HttpContext), "Requested a structured AI review for a completed PayPal Sandbox order.", "agent-ai", agent.Id, "follow-up-v" + policy.Version, tenantId);
     try
     {
-        var reason = await ai.Suggest(order, ct);
-        var proposal = store.AddProposal(order.Id, reason, Actor(request.HttpContext), "agent:" + agent.Id + " (" + agent.Name + ")");
+        var review = await ai.Suggest(order, ct);
+        audit.Write(id, "ai.review.completed", "agent:" + agent.Id, "OpenAI returned a structured recommendation in category " + review.Category + ".", review.Provider, review.Model, review.PromptVersion, tenantId);
+        var proposal = store.AddProposal(order.Id, review.Recommendation, Actor(request.HttpContext), "agent:" + agent.Id + " (" + agent.Name + ")", review);
         if (proposal is null)
             return Results.StatusCode(StatusCodes.Status403Forbidden);
         return Results.Ok(proposal);
     }
     catch (ProviderException e)
     {
-        audit.Write(id, "review.failed", "ai-agent", "AI review was unavailable.", "openai", null, null, tenantId);
+        audit.Write(id, "ai.review.failed", "agent:" + agent.Id, "AI review was unavailable: " + e.Message, "openai", null, AiReview.PromptVersion, tenantId);
         return Results.Problem(e.Message, statusCode: 502);
     }
 });

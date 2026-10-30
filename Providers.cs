@@ -223,7 +223,9 @@ public sealed class PayPalSandboxProvider(IHttpClientFactory clients, IConfigura
 
 public sealed class AiReview(IHttpClientFactory clients, IConfiguration config)
 {
-    public async Task<string> Suggest(Order order, CancellationToken ct)
+    public const string PromptVersion = "order-followup-v1";
+
+    public async Task<AiReviewSuggestion> Suggest(Order order, CancellationToken ct)
     {
         var key = AppConfiguration.OpenAiApiKey(config);
         var model = AppConfiguration.OpenAiModel(config);
@@ -239,12 +241,44 @@ public sealed class AiReview(IHttpClientFactory clients, IConfiguration config)
             new
             {
                 model,
-                instructions = "You are reviewing a sandbox commerce order. In one short sentence recommend a sensible internal follow-up for the merchant. Do not claim that shipping or customer communications occurred. You cannot execute actions.",
+                max_output_tokens = 500,
+                instructions = "You are reviewing a PayPal Sandbox commerce order for internal merchant triage. Return only the requested structured review. Recommend at most one internal follow-up. Use only the supplied order facts. Do not claim that shipping, fraud checks, address verification, inventory changes, customer communications, refunds, fulfillment, or any other external action occurred. You cannot execute actions.",
                 input = "Product: "
                     + order.ProductName
                     + ". Payment status: "
                     + order.Status
+                    + ". Amount: "
+                    + order.Price.ToString("F2", CultureInfo.InvariantCulture)
+                    + " "
+                    + order.Currency
                     + ". Shipping status: not available.",
+                text = new
+                {
+                    format = new
+                    {
+                        type = "json_schema",
+                        name = "commerce_followup_review",
+                        strict = true,
+                        schema = new
+                        {
+                            type = "object",
+                            properties = new
+                            {
+                                recommendation = new { type = "string" },
+                                category = new
+                                {
+                                    type = "string",
+                                    @enum = new[] { "manual_follow_up", "payment_review", "inventory_review", "no_action" }
+                                },
+                                confidence = new { type = "number" },
+                                evidence = new { type = "array", items = new { type = "string" } },
+                                risk_flags = new { type = "array", items = new { type = "string" } }
+                            },
+                            required = new[] { "recommendation", "category", "confidence", "evidence", "risk_flags" },
+                            additionalProperties = false
+                        }
+                    }
+                }
             }
         );
         using var response = await clients.CreateClient().SendAsync(request, ct);
@@ -256,8 +290,11 @@ public sealed class AiReview(IHttpClientFactory clients, IConfiguration config)
             );
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
         var parts = new List<string>();
+        if (doc.RootElement.TryGetProperty("output_text", out var outputText) && outputText.ValueKind == JsonValueKind.String)
+            parts.Add(outputText.GetString() ?? "");
         if (
-            doc.RootElement.TryGetProperty("output", out var output)
+            parts.Count == 0
+            && doc.RootElement.TryGetProperty("output", out var output)
             && output.ValueKind == JsonValueKind.Array
         )
             foreach (var item in output.EnumerateArray())
@@ -275,6 +312,39 @@ public sealed class AiReview(IHttpClientFactory clients, IConfiguration config)
         var reason = string.Join(" ", parts).Trim();
         if (reason.Length == 0)
             throw new ProviderException("AI returned no review text.");
-        return reason.Length <= 1000 ? reason : reason[..1000];
+        AiReviewPayload? payload;
+        try
+        {
+            payload = JsonSerializer.Deserialize<AiReviewPayload>(reason, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        }
+        catch (JsonException)
+        {
+            throw new ProviderException("AI returned an invalid structured review.");
+        }
+        if (payload is null || string.IsNullOrWhiteSpace(payload.Recommendation) || string.IsNullOrWhiteSpace(payload.Category) ||
+            payload.Confidence is < 0 or > 1 || payload.Evidence is null || payload.RiskFlags is null)
+            throw new ProviderException("AI returned an incomplete structured review.");
+        if (payload.Recommendation.Length > 1000 || payload.Evidence.Count > 6 || payload.RiskFlags.Count > 6 ||
+            payload.Evidence.Any(item => item.Length > 240) || payload.RiskFlags.Any(item => item.Length > 240))
+            throw new ProviderException("AI returned a structured review outside the allowed limits.");
+        var category = payload.Category.Trim().ToLowerInvariant();
+        if (category is not ("manual_follow_up" or "payment_review" or "inventory_review" or "no_action"))
+            throw new ProviderException("AI returned an unsupported review category.");
+        return new AiReviewSuggestion(
+            payload.Recommendation.Trim(),
+            category,
+            payload.Confidence,
+            payload.Evidence.Select(item => item.Trim()).Where(item => item.Length > 0).ToArray(),
+            payload.RiskFlags.Select(item => item.Trim()).Where(item => item.Length > 0).ToArray(),
+            "openai",
+            model,
+            PromptVersion);
     }
+
+    private sealed record AiReviewPayload(
+        string Recommendation,
+        string Category,
+        decimal Confidence,
+        IReadOnlyList<string>? Evidence,
+        [property: System.Text.Json.Serialization.JsonPropertyName("risk_flags")] IReadOnlyList<string>? RiskFlags);
 }

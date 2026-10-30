@@ -60,7 +60,7 @@ function renderSystem() {
   const summary=node('div','status-summary');summary.append(node('span','dot green'),document.createTextNode('Application responding'));target.append(summary,node('p','muted',paypalVerified?'PayPal Sandbox connection verified.':state.paypal?'PayPal Sandbox credentials configured; verify the connection in Connectors.':'Provider access is not configured.'));
   const box=node('div','status-box');
   function pair(label,value){const d=node('div');d.append(node('small','',label),node('strong','',value));return d;}
-  box.append(pair('Environment','Sandbox mode'),pair('Backend','Responding'),pair('PayPal API',!state.paypal?'Not configured':paypalVerified?'Verified':'Configured'));target.append(box);
+  box.append(pair('Environment','Sandbox mode'),pair('Backend','Responding'),pair('PayPal API',!state.paypal?'Not configured':paypalVerified?'Verified':'Configured'),pair('AI review',!state.ai?'Not configured':'OpenAI · '+(state.aiModel||'configured')));target.append(box);
 }
 function orderRow(order) {
   const row=node('div','list-row'), icon=node('div','row-icon','P'), info=node('div','row-main');
@@ -134,7 +134,14 @@ function connectorCard(c) {
 function renderInsights() {
   const target=byId('insights');clear(target);
   if(!proposals.length) return empty(target,state.ai?'No AI reviews yet.':'AI review is not configured.');
-  proposals.slice(0,2).forEach(p=>{const item=node('div','insight');item.append(node('strong','','Proposed follow-up'),node('small','',p.reason));target.append(item)});
+  proposals.slice(0,2).forEach(p=>{const item=node('div','insight');item.append(node('strong','','AI-generated follow-up'),node('small','',p.reason));if(p.provider||p.model)item.append(node('small','ai-meta',(p.provider||'AI')+' · '+(p.model||'model')+(p.confidence===null||p.confidence===undefined?'':' · '+Math.round(Number(p.confidence)*100)+'% confidence')));target.append(item)});
+}
+function renderAiEvidence(target,p) {
+  if(p.provider||p.model||p.category||p.confidence!==null&&p.confidence!==undefined){
+    target.append(node('small','ai-meta',(p.provider||'AI')+' · '+(p.model||'model')+(p.category?' · '+p.category.replaceAll('_',' '):'')+(p.confidence===null||p.confidence===undefined?'':' · '+Math.round(Number(p.confidence)*100)+'% confidence')));
+  }
+  if(p.evidence?.length) target.append(node('small','ai-evidence','Evidence: '+p.evidence.join(' · ')));
+  if(p.riskFlags?.length) target.append(node('small','ai-risk','Risk flags: '+p.riskFlags.join(' · ')));
 }
 function renderDetail() {
   const target=byId('orderDetail');clear(target);const order=orders.find(o=>o.id===activeOrder);
@@ -144,7 +151,9 @@ function renderDetail() {
   const items=node('article','card'), heading=node('div','card-heading');heading.append(node('h2','','Order Items'));items.append(heading);
   const item=node('div','detail-item'),product=node('div');product.append(node('strong','',order.productName),node('small','','Product ID: '+order.productId+' | Quantity: 1'));
   item.append(product,node('strong','',money(order.price,order.currency)));items.append(item,node('div','detail-total','Total: '+money(order.price,order.currency)));left.append(items);
-  const review=node('article','card');review.append(node('h2','','AI Review'),node('p','muted','Ask the agent to propose an internal follow-up. The approval gate will review it.'));
+  const review=node('article','card');review.append(node('h2','','AI Review'),node('p','muted','OpenAI provides decision support for this completed Sandbox order. Any resulting internal follow-up remains behind the policy gate.'));
+  const existingReview=proposals.find(p=>p.orderId===order.id);
+  if(existingReview){const summary=node('div','ai-review-summary');summary.append(badge('AI-generated','purple'),node('p','',existingReview.reason));renderAiEvidence(summary,existingReview);review.append(summary)}
   const eligible=agents.filter(agent=>agent.effectivePermissions.includes('read_orders')&&agent.effectivePermissions.includes('propose_followup'));
   const agentLabel=node('label','','Agent'),agentSelect=node('select');
   for(const agent of eligible){const option=node('option','',agent.name);option.value=agent.id;agentSelect.append(option)}
@@ -377,7 +386,7 @@ function renderApprovals() {
     const order=orders.find(o=>o.id===p.orderId);
     description.append(badge('Internal follow-up','neutral'),node('h3','','Order '+displayId(p.orderId)),node('p','',order?money(order.price,order.currency):'Order no longer available'),badge('follow-up-v'+p.policyVersion,'orange'));
     const status=node('div');status.append(node('small','','PAYMENT STATE'),node('strong','',order?(order.status==='PAID'?'Captured':'Created'):'Unavailable'));
-    const evidence=node('div');evidence.append(node('small','','AI PROPOSAL'),node('p','',p.reason));details.append(status,evidence);
+    const evidence=node('div');evidence.append(node('small','','AI PROPOSAL'),node('p','',p.reason));renderAiEvidence(evidence,p);details.append(status,evidence);
     controls.append(p.status==='PENDING'?action('Review & decide',()=>openApproval(p),'button primary'):badge(p.status==='REJECTED'?'Rejected':'Task created',p.status==='REJECTED'?'neutral':'green'));
     if(followupPolicy.mode==='human_only' && order?.status==='PAID') controls.append(action('Create manual task',async()=>{const description=window.prompt('Describe the internal follow-up task');if(!description?.trim())return;try{await post('/api/orders/'+order.id+'/tasks',{description:description.trim()});await refresh();notify('Manual internal task created.')}catch(e){notify(e.message)}},'button outline'));
     card.append(description,details,controls);target.append(card);
@@ -422,6 +431,8 @@ function renderConnectors() {
 }
 function openApproval(proposal) {
   activeProposal=proposal.id;byId('dialogOrder').textContent='Order '+displayId(proposal.orderId);byId('dialogReason').textContent=proposal.reason;
+  byId('dialogAiMeta').textContent=(proposal.provider||'AI')+' · '+(proposal.model||'model')+(proposal.category?' · '+proposal.category.replaceAll('_',' '):'')+(proposal.confidence===null||proposal.confidence===undefined?'':' · '+Math.round(Number(proposal.confidence)*100)+'% confidence');
+  const evidence=byId('dialogAiEvidence');evidence.replaceChildren();if(proposal.evidence?.length||proposal.riskFlags?.length){if(proposal.evidence?.length)evidence.append(node('div','', 'Evidence: '+proposal.evidence.join(' · ')));if(proposal.riskFlags?.length)evidence.append(node('div','ai-risk','Risk flags: '+proposal.riskFlags.join(' · ')));evidence.hidden=false}else{evidence.hidden=true}
   const stale=proposal.policyVersion!==followupPolicy.version||followupPolicy.mode!=='approval_required';byId('dialogPolicy').textContent=stale?'Policy changed; a new review is required.':'Policy follow-up-v'+proposal.policyVersion+' requires human approval. Approval creates an internal task only.';byId('approve').disabled=stale;byId('reject').disabled=stale;
   const order=orders.find(o=>o.id===proposal.orderId);byId('dialogPaymentStatus').textContent=order?(order.status==='PAID'?'Captured in PayPal sandbox':'Created - payment not captured'):'Unavailable';
   byId('decisionReason').value='';byId('dialogError').hidden=true;byId('approvalDialog').showModal();

@@ -78,6 +78,14 @@ application-data directory, outside the repository. This certificate is for
 local ASP.NET data-protection keys only; it is not a PayPal certificate or a
 webhook/TLS certificate.
 
+To make one real, billable OpenAI request using the configured User Secrets,
+run the opt-in smoke test. It uses a synthetic paid order and does not call
+PayPal or write application data:
+
+```powershell
+dotnet run --project checks -- --live-openai
+```
+
 Open http://127.0.0.1:5080 and sign in. PayPal and AI credentials are optional for startup, but required for their respective actions. The PayPal endpoint is fixed to the sandbox. The application rejects requests from non-loopback clients and non-local host names, except for `/api/webhooks/paypal` when `PAYPAL360_WEBHOOK_HOST` exactly matches the request host and the request still arrives over loopback from a trusted reverse proxy or tunnel.
 
 The `5080` command is the minimal local-only mode. For the verified recording flow, use the HTTPS UI and the separate local webhook listener instead:

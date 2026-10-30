@@ -289,8 +289,14 @@ internal static class IntegrationChecks
         {
             agentId = fullAgentId
         }, csrf);
-        Check(review.StatusCode == HttpStatusCode.OK, "authorized agent can propose a follow-up through the policy gate");
-        var proposalId = (await review.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetString();
+        var reviewBody = await review.Content.ReadFromJsonAsync<JsonElement>();
+        Check(review.StatusCode == HttpStatusCode.OK
+              && reviewBody.GetProperty("category").GetString() == "manual_follow_up"
+              && reviewBody.GetProperty("provider").GetString() == "openai"
+              && reviewBody.GetProperty("confidence").GetDecimal() == 0.92m
+              && reviewBody.GetProperty("evidence").GetArrayLength() == 1,
+            "authorized agent can propose a structured AI follow-up through the policy gate");
+        var proposalId = reviewBody.GetProperty("id").GetString();
         var decision = await Send(client, "/api/proposals/" + proposalId + "/decision", new
         {
             decision = "approve",
@@ -304,6 +310,7 @@ internal static class IntegrationChecks
         var audit = await client.GetFromJsonAsync<JsonElement[]>("/api/audit") ?? [];
         Check(audit.Any(item => item.GetProperty("event").GetString() == "session.login_denied"), "failed login is recorded without a password");
         Check(audit.Any(item => item.GetProperty("event").GetString() == "agent.access_denied") &&
+              audit.Any(item => item.GetProperty("event").GetString() == "ai.review.completed" && item.GetProperty("source").GetString() == "openai") &&
               audit.Any(item => item.GetProperty("event").GetString() == "proposal.created" && item.GetProperty("actor").GetString()!.Contains(fullAgentId!)) &&
               audit.Any(item => item.GetProperty("event").GetString() == "approval.approve" && item.GetProperty("actor").GetString()!.Contains("test-admin")), "audit distinguishes denial, agent proposal and human approval");
         Check(audit.Any(item => item.GetProperty("event").GetString() == "approval.approve" && item.GetProperty("policyVersion").GetString() == "follow-up-v1" && !string.IsNullOrEmpty(item.GetProperty("eventId").GetString())), "approval audit includes event ID and policy version");
@@ -405,8 +412,27 @@ internal sealed class FakeAiHandler : HttpMessageHandler
                             ? "{\"id\":\"HTTP-REFUND\",\"status\":\"COMPLETED\"}"
                         : url.Contains("/v2/checkout/orders/", StringComparison.Ordinal)
                             ? "{\"id\":\"HTTP-ORDER\",\"status\":\"CREATED\"}"
-                            : "{\"output\":[{\"content\":[{\"type\":\"output_text\",\"text\":\"Review fulfillment.\"}]}]}";
+                            : StructuredAiResponse();
         return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") });
+    }
+
+    private static string StructuredAiResponse()
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            recommendation = "Review fulfillment.",
+            category = "manual_follow_up",
+            confidence = 0.92m,
+            evidence = new[] { "Payment is captured." },
+            risk_flags = Array.Empty<string>()
+        });
+        return JsonSerializer.Serialize(new
+        {
+            output = new[]
+            {
+                new { content = new[] { new { type = "output_text", text = payload } } }
+            }
+        });
     }
 }
 
