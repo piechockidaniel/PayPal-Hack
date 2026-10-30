@@ -283,7 +283,7 @@ app.MapGet("/api/connectors", (HttpContext context, IConfiguration c, CommerceDa
         new { id = "paypal", role = "Payments", provider = "PayPal Orders API", status = Status("paypal", paypalConfigured), detail = Detail("paypal", "Sandbox credentials are configured; use Verify to test OAuth without creating an order."), canVerify = true },
         new { id = "paypal-invoicing", role = "Invoicing", provider = "PayPal", status = "unverified", detail = "Adapter not implemented", canVerify = false },
         new { id = "gmc", role = "Product channel", provider = "Google Merchant Center", status = Status("gmc", gmcConfigured), detail = Detail("gmc", "Read-only processed-product connector; local catalog, price, inventory, orders and tenant ownership remain authoritative."), canVerify = true },
-        new { id = "shipping", role = "Shipping", provider = "Unassigned", status = "unavailable", detail = "No connector configured", canVerify = false },
+        new { id = "shipping", role = "Shipping", provider = "Not configured", status = "unavailable", detail = "No shipping connector is configured; provider selection remains a future setup step.", canVerify = false },
         new { id = "stripe", role = "Payments", provider = "Stripe", status = "unavailable", detail = "Optional adapter not implemented", canVerify = false },
         new { id = "woocommerce", role = "Storefront", provider = "WooCommerce", status = "unavailable", detail = "Optional adapter not implemented", canVerify = false },
         new { id = "allegro", role = "Marketplace", provider = "Allegro", status = "unavailable", detail = "Optional adapter not implemented", canVerify = false }
@@ -617,6 +617,62 @@ app.MapPost("/api/checkout", async (CheckoutRequest body, HttpRequest request, I
     }
 });
 
+app.MapPost("/api/checkout/gmc", async (GmcCheckoutRequest body, HttpRequest request, IReadOnlyCatalogChannel gmc, CheckoutCoordinator coordinator, AuditLog audit, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(body.OfferId))
+        return Results.BadRequest(new { error = "A GMC offer ID is required." });
+    if (!Guid.TryParseExact(body.RequestId, "D", out var requestId))
+        return Results.BadRequest(new { error = "A valid checkout request ID is required." });
+
+    GmcCatalogPage page;
+    try
+    {
+        page = await gmc.ListProductsAsync(Tenant(request.HttpContext), null, 1000, ct);
+    }
+    catch (ProviderException e)
+    {
+        return Results.Problem(e.Message, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+    var snapshot = page.Products.FirstOrDefault(item => string.Equals(item.OfferId, body.OfferId.Trim(), StringComparison.Ordinal));
+    if (snapshot is null)
+        return Results.NotFound(new { error = "The selected GMC product is no longer available in the read-only snapshot." });
+    if (snapshot.Price is null || string.IsNullOrWhiteSpace(snapshot.Currency))
+        return Results.UnprocessableEntity(new { error = "The selected GMC product has no usable price for a sandbox order." });
+
+    var product = new Product(
+        CreateGmcProductId(Tenant(request.HttpContext), snapshot.OfferId),
+        string.IsNullOrWhiteSpace(snapshot.Title) ? snapshot.OfferId : snapshot.Title.Trim(),
+        snapshot.Price.Value,
+        snapshot.Currency);
+    var checkoutAccessToken = request.Cookies["PayPal360.Checkout"] ?? CheckoutCoordinator.CreateAccessToken();
+    try
+    {
+        var result = await coordinator.CreateAsync(product, requestId, ct, Tenant(request.HttpContext), checkoutAccessToken);
+        request.HttpContext.Response.Cookies.Append("PayPal360.Checkout", checkoutAccessToken, new CookieOptions
+        {
+            HttpOnly = true,
+            SameSite = SameSiteMode.Strict,
+            Secure = request.IsHttps,
+            MaxAge = TimeSpan.FromHours(5),
+            Path = "/api/checkout"
+        });
+        return Results.Ok(new { orderId = result.Order.Id, paypalOrderId = result.Order.ProviderOrderId });
+    }
+    catch (InvalidOperationException e)
+    {
+        return Results.Conflict(new { error = e.Message });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+    catch (ProviderException e)
+    {
+        audit.Write("-", "checkout.failed", "buyer", "GMC snapshot sandbox order creation failed.", "PayPal sandbox", null);
+        return Results.Problem(e.Message, statusCode: 502);
+    }
+});
+
 app.MapPost("/api/checkout/reconcile/{requestId:guid}", async (Guid requestId, HttpRequest request, CheckoutCoordinator coordinator, CancellationToken ct) =>
 {
     var checkoutAccessToken = request.Cookies["PayPal360.Checkout"];
@@ -836,6 +892,12 @@ static async Task<string> VerifyGmcAsync(IReadOnlyCatalogChannel channel, string
     var page = await channel.ListProductsAsync(tenantId, null, 1, ct);
     return "Google Merchant API read-only product check returned " + page.Products.Count + " processed product(s).";
 }
+
+static string CreateGmcProductId(string tenantId, string offerId)
+{
+    var hash = SHA256.HashData(Encoding.UTF8.GetBytes(tenantId + "|" + offerId));
+    return "gmc-" + Convert.ToHexString(hash[..8]).ToLowerInvariant();
+}
 static ConnectorVerification SaveConnectorVerification(CommerceDatabase database, string connectorId, string tenantId, string status, string detail, HttpContext context) => database.Update(state =>
 {
     var verification = new ConnectorVerification(connectorId, status, detail, DateTimeOffset.UtcNow, tenantId);
@@ -885,6 +947,7 @@ record ActionReconcileRequest(string? Reason);
 record ReviewRequest(string? AgentId);
 record LoginRequest(string? Username, string? Password);
 record CheckoutRequest(string ProductId, string? RequestId);
+record GmcCheckoutRequest(string OfferId, string? RequestId);
 record DecisionRequest(string? Operator, string Decision, string? Reason);
 record CreateCredentialRequest(string? Reason);
 record CreateUserRequest(string? Name, string? Password, string[]? RoleIds, string? Reason);

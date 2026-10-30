@@ -1,7 +1,7 @@
 const byId = id => document.getElementById(id);
 const node = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; };
 const clear = element => element.replaceChildren();
-let state = {}, products = [], orders = [], proposals = [], actionRequests = [], audit = [], connectors = [], roles = [], agents = [], tasks = [];
+let state = {}, products = [], orders = [], proposals = [], actionRequests = [], audit = [], connectors = [], roles = [], agents = [], tasks = [], gmcProducts = null, gmcProductsError = null;
 let selectedProduct = null, activeOrder = null, activeProposal = null, activeActionRequest = null, refundOrder = null, checkoutOrder = null, followupPolicy = {};
 const titles = {
   overview: ['Overview','Monitor your commerce platform, orders, and approvals at a glance'],
@@ -53,7 +53,13 @@ document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=
 async function refresh() {
   try {
     [state,products,orders,proposals,actionRequests,audit,connectors,roles,agents,tasks,followupPolicy]=await Promise.all(['/api/status','/api/products','/api/orders','/api/proposals','/api/action-requests','/api/audit','/api/connectors','/api/roles','/api/agents','/api/tasks','/api/policies/followup'].map(url=>api(url)));
-    renderSystem();renderOrders();renderApprovals();renderAudit();renderProducts();renderConnectors();renderInsights();renderIdentities();renderTasks();renderPolicy();
+    const gmc=connectors.find(c=>c.id==='gmc');
+    gmcProducts=null;gmcProductsError=null;
+    if(gmc?.status==='verified') {
+      try { const page=await api('/api/connectors/gmc/products?pageSize=25');gmcProducts=page.products||[]; }
+      catch(error) { gmcProductsError=error.message; }
+    }
+    renderSystem();renderOrders();renderApprovals();renderAudit();renderProducts();renderGmcSnapshot();renderConnectors();renderInsights();renderIdentities();renderTasks();renderPolicy();
     if(activeOrder && !byId('view-detail').hidden)renderDetail();
   } catch(error){notify(error.message)}
 }
@@ -254,11 +260,18 @@ async function decide(decision) {
 }
 byId('approve').addEventListener('click',()=>decide('approve'));byId('reject').addEventListener('click',()=>decide('reject'));
 async function checkout(product) {
-  selectedProduct=product;checkoutOrder=null;const checkoutStorageKey='paypal360.checkout.'+product.id;const checkoutRequestId=sessionStorage.getItem(checkoutStorageKey)||crypto.randomUUID();sessionStorage.setItem(checkoutStorageKey,checkoutRequestId);byId('checkout').hidden=false;byId('checkoutProduct').textContent=product.name+' - '+money(product.price,product.currency);clear(byId('paypalButtons'));
+  return checkoutWithSource(product,null);
+}
+async function checkoutGmc(product) {
+  if(product.price===null||product.price===undefined||!product.currency){notify('This GMC product has no usable price for a sandbox order.');return}
+  return checkoutWithSource({id:'gmc-'+product.offerId,name:product.title||product.offerId,price:product.price,currency:product.currency},{offerId:product.offerId});
+}
+async function checkoutWithSource(product,source) {
+  selectedProduct=product;checkoutOrder=null;const checkoutStorageKey='paypal360.checkout.'+(source?'gmc.'+source.offerId:product.id);const checkoutRequestId=sessionStorage.getItem(checkoutStorageKey)||crypto.randomUUID();sessionStorage.setItem(checkoutStorageKey,checkoutRequestId);byId('checkout').hidden=false;byId('checkoutProduct').textContent=product.name+' - '+money(product.price,product.currency)+(source?' · GMC read-only snapshot':'');clear(byId('paypalButtons'));
   try {
     if(!window.paypal)await new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://www.paypal.com/sdk/js?client-id='+encodeURIComponent(state.clientId)+'&currency='+encodeURIComponent(product.currency);script.onload=resolve;script.onerror=()=>reject(Error('Could not load PayPal checkout.'));document.head.append(script)});
     window.paypal.Buttons({
-      createOrder:async()=>{const r=await post('/api/checkout',{productId:product.id,requestId:checkoutRequestId});checkoutOrder=r.orderId;return r.paypalOrderId},
+      createOrder:async()=>{const r=await post(source?'/api/checkout/gmc':'/api/checkout',source?{offerId:source.offerId,requestId:checkoutRequestId}:{productId:product.id,requestId:checkoutRequestId});checkoutOrder=r.orderId;return r.paypalOrderId},
       onApprove:async()=>{if(!checkoutOrder)throw Error('Order is missing.');await post('/api/checkout/'+checkoutOrder+'/capture',{});sessionStorage.removeItem(checkoutStorageKey);byId('checkout').hidden=true;await refresh();notify('Sandbox payment captured.');navigate('orders')},
       onError:error=>notify('PayPal checkout failed: '+(error.message||'Check sandbox configuration.'))
     }).render('#paypalButtons');
@@ -413,17 +426,49 @@ function providerActionRow(request,compact) {
   card.append(info,details,controls);return card;
 }
 function renderProducts() {
+  const gmc=connectors.find(c=>c.id==='gmc'), gmcVerified=gmc?.status==='verified';
+  const channelState=byId('catalogChannelState'), channelNote=byId('catalogChannelNote'), sourceBadge=byId('catalogSourceBadge'), explanation=byId('catalogChannelExplanation');
+  channelState.textContent=gmcVerified?'GMC read-only':gmc?.status==='configured-not-verified'?'GMC needs check':gmc?.status==='verification-failed'?'Verification failed':'Not connected';
+  channelNote.textContent=gmcVerified?'Connection verified; no write sync':'No external channel verified';
+  sourceBadge.textContent=gmcVerified?'Local source of truth · GMC connected':'Local source of truth';
+  sourceBadge.className='badge '+(gmcVerified?'green':'neutral');
+  explanation.textContent=gmcVerified?'Google Merchant Center is connected for read-only discovery. The local catalog remains authoritative; product publication and synchronization are not enabled.':'The local catalog is authoritative for product data, pricing and checkout.';
   addMetric('catalogTotal',products.length);const target=byId('products');clear(target);
   const query=byId('productSearch').value.trim().toLowerCase();const matching=products.filter(p=>(p.name+' '+p.id).toLowerCase().includes(query));
   if(!matching.length)return empty(target,products.length?'No products match this search.':'No products available.');
   const {wrapper,result}=table(['Product','Product ID','Price','Inventory','Channel sync','']);const body=node('tbody');
   for(const p of matching){
     const row=node('tr'),name=node('td'),id=node('td'),price=node('td'),stock=node('td'),channel=node('td'),actions=node('td');
-    name.append(node('strong','',p.name));id.textContent=p.id;price.textContent=money(p.price,p.currency);stock.textContent='Not tracked';channel.append(badge('Unverified','neutral'));
+    name.append(node('strong','',p.name));id.textContent=p.id;price.textContent=money(p.price,p.currency);stock.textContent='Not tracked';channel.append(badge(gmcVerified?'GMC read-only':'Unverified',gmcVerified?'green':'neutral'));
     const b=action('Buy in sandbox',()=>checkout(p),'button primary');b.disabled=!state.paypal;actions.append(b);row.append(name,id,price,stock,channel,actions);body.append(row);
   }
   result.append(body);target.append(wrapper,node('p','hint','Showing '+matching.length+' of '+products.length+' products.'));
   if(!state.paypal)target.append(node('p','hint','Configure PayPal sandbox credentials to use checkout.'));
+}
+function renderGmcSnapshot() {
+  const target=byId('gmcSnapshot'), status=byId('gmcSnapshotStatus');clear(target);
+  const gmc=connectors.find(c=>c.id==='gmc'), verified=gmc?.status==='verified';
+  status.textContent=verified?'Verified · read-only':gmc?.status==='configured-not-verified'?'Needs verification':'Not connected';
+  status.className='badge '+(verified?'green':'neutral');
+  if(!verified)return empty(target,gmc?.status==='configured-not-verified'?'Verify Google Merchant Center in Connectors to load its read-only snapshot.':'Connect and verify Google Merchant Center to load its read-only snapshot.');
+  if(gmcProductsError)return empty(target,'GMC snapshot unavailable: '+gmcProductsError);
+  if(gmcProducts===null)return empty(target,'GMC snapshot is loading.');
+  if(!gmcProducts.length)return empty(target,'GMC returned no products for this account.');
+  const {wrapper,result}=table(['Offer ID','Title','Price','Language','Feed label','Data source','State','']);
+  const body=node('tbody');
+  gmcProducts.forEach(product=>{
+    const row=node('tr');
+    const stateCell=node('td');
+    stateCell.append(badge(product.archived?'Archived':'Processed',product.archived?'neutral':'green'));
+    const priceCell=node('td','',product.price===null||product.price===undefined?'Unavailable':money(product.price,product.currency));
+    const actionCell=node('td');
+    const orderButton=action('Create sandbox order',()=>checkoutGmc(product),'button outline');
+    orderButton.disabled=!state.paypal||product.archived||product.price===null||product.price===undefined||!product.currency;
+    actionCell.append(orderButton);
+    row.append(node('td','',product.offerId||'—'),node('td','',product.title||'Untitled product'),priceCell,node('td','',product.contentLanguage||'—'),node('td','',product.feedLabel||'—'),node('td','',product.dataSource||'—'),stateCell,actionCell);
+    body.append(row);
+  });
+  result.append(body);target.append(wrapper,node('p','hint','Showing '+gmcProducts.length+' GMC product(s). Read-only discovery only; local catalog remains authoritative.'));
 }
 function renderConnectors() {
   addMetric('connectorTotal',connectors.length);addMetric('connectorAvailable',connectors.filter(c=>c.status==='available'||c.status==='verified').length);

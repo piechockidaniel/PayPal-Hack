@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -48,13 +49,16 @@ public sealed class GmcCatalogProvider(IHttpClientFactory clients, IConfiguratio
                 var offerId = StringProperty(item, "offerId") ?? StringProperty(item, "name") ?? "";
                 if (offerId.Length == 0)
                     continue;
+                var price = ReadPrice(item, "salePrice") ?? ReadPrice(item, "price");
                 products.Add(new GmcCatalogProduct(
                     offerId,
                     NestedStringProperty(item, "productAttributes", "title"),
                     StringProperty(item, "contentLanguage"),
                     StringProperty(item, "feedLabel"),
                     StringProperty(item, "dataSource"),
-                    item.TryGetProperty("archived", out var archived) && archived.ValueKind == JsonValueKind.True));
+                    item.TryGetProperty("archived", out var archived) && archived.ValueKind == JsonValueKind.True,
+                    price?.Amount,
+                    price?.Currency));
             }
 
         return new GmcCatalogPage(
@@ -129,6 +133,21 @@ public sealed class GmcCatalogProvider(IHttpClientFactory clients, IConfiguratio
 
     private static string? NestedStringProperty(JsonElement element, string parent, string child) =>
         element.TryGetProperty(parent, out var nested) ? StringProperty(nested, child) : null;
+
+    private static (decimal Amount, string Currency)? ReadPrice(JsonElement product, string name)
+    {
+        if (!product.TryGetProperty("productAttributes", out var attributes) ||
+            !attributes.TryGetProperty(name, out var price) ||
+            price.ValueKind != JsonValueKind.Object)
+            return null;
+        var amountMicros = StringProperty(price, "amountMicros") ??
+            (price.TryGetProperty("amountMicros", out var numeric) ? numeric.ToString() : null);
+        var currency = StringProperty(price, "currencyCode");
+        if (string.IsNullOrWhiteSpace(amountMicros) || string.IsNullOrWhiteSpace(currency) ||
+            !decimal.TryParse(amountMicros, NumberStyles.Number, CultureInfo.InvariantCulture, out var micros) || micros <= 0)
+            return null;
+        return (micros / 1_000_000m, currency.Trim().ToUpperInvariant());
+    }
 
     private static string Base64Url(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
     private sealed record CachedToken(string Value, DateTimeOffset ExpiresAt);

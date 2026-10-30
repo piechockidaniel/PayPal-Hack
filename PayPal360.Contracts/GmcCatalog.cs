@@ -6,7 +6,9 @@ public sealed record GmcCatalogProduct(
     string? ContentLanguage,
     string? FeedLabel,
     string? DataSource,
-    bool Archived);
+    bool Archived,
+    decimal? Price = null,
+    string? Currency = null);
 
 public sealed record GmcCatalogPage(
     IReadOnlyList<GmcCatalogProduct> Products,

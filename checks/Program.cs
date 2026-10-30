@@ -569,7 +569,7 @@ sealed class GmcFakeHandler : HttpMessageHandler
         LastMethod = request.Method;
         var json = LastUrl.StartsWith("https://oauth2.googleapis.com/token", StringComparison.Ordinal)
             ? "{\"access_token\":\"gmc-test-token\",\"expires_in\":3600}"
-            : "{\"products\":[{\"name\":\"accounts/5308690318/products/en~PL~sku-1\",\"offerId\":\"sku-1\",\"contentLanguage\":\"en\",\"feedLabel\":\"PL\",\"dataSource\":\"accounts/5308690318/dataSources/1\",\"productAttributes\":{\"title\":\"Read-only GMC product\"},\"archived\":false}],\"nextPageToken\":\"next\"}";
+        : "{\"products\":[{\"name\":\"accounts/5308690318/products/en~PL~sku-1\",\"offerId\":\"sku-1\",\"contentLanguage\":\"en\",\"feedLabel\":\"PL\",\"dataSource\":\"accounts/5308690318/dataSources/1\",\"productAttributes\":{\"title\":\"Read-only GMC product\",\"price\":{\"amountMicros\":49000000,\"currencyCode\":\"PLN\"}},\"archived\":false}],\"nextPageToken\":\"next\"}";
         return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent(json, Encoding.UTF8, "application/json")
