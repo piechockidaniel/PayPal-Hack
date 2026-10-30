@@ -3,7 +3,6 @@ obj/
 data/
 .env
 .env.*
-!.env.example
 
 /.vs/**
 /design

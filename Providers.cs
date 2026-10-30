@@ -15,8 +15,8 @@ public sealed class PayPalSandboxProvider(IHttpClientFactory clients, IConfigura
 
     private async Task<string> Token(CancellationToken ct)
     {
-        var id = config["PAYPAL_CLIENT_ID"];
-        var secret = config["PAYPAL_CLIENT_SECRET"];
+        var id = AppConfiguration.PayPalClientId(config);
+        var secret = AppConfiguration.PayPalClientSecret(config);
         if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(secret))
             throw new ProviderException("PayPal sandbox credentials are not configured.");
 
@@ -225,8 +225,8 @@ public sealed class AiReview(IHttpClientFactory clients, IConfiguration config)
 {
     public async Task<string> Suggest(Order order, CancellationToken ct)
     {
-        var key = config["OPENAI_API_KEY"];
-        var model = config["OPENAI_MODEL"];
+        var key = AppConfiguration.OpenAiApiKey(config);
+        var model = AppConfiguration.OpenAiModel(config);
         if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(model))
             throw new ProviderException("OpenAI API key and model are not configured.");
 

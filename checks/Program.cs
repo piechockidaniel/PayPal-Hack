@@ -103,14 +103,38 @@ catch (InvalidOperationException e) when (e.Message.Contains("Only completed pay
 }
 Check(store.CreateManualTask(otherTenantOrder.Id, "Tenant B task", "user:tenant-b", "tenant-b").Status == "OPEN", "the owning tenant can create its manual task");
 
+var placeholderSettings = new ConfigurationBuilder()
+    .AddInMemoryCollection(new Dictionary<string, string?>
+    {
+        ["PayPal:PAYPAL_CLIENT_ID"] = "ChangeMe",
+        ["PAYPAL_CLIENT_ID"] = "legacy-client",
+        ["AgentAI:OPENAI_API_KEY"] = "your_openai_api_key",
+        ["OPENAI_API_KEY"] = "legacy-key"
+    })
+    .Build();
+Check(AppConfiguration.PayPalClientId(placeholderSettings) == "legacy-client" && AppConfiguration.OpenAiApiKey(placeholderSettings) == "legacy-key", "configuration placeholders are treated as unset");
+
+var prioritySettings = new ConfigurationBuilder()
+    .AddInMemoryCollection(new Dictionary<string, string?>
+    {
+        ["PayPal:PAYPAL_CLIENT_ID"] = "ChangeMe",
+        ["PAYPAL_CLIENT_ID"] = "legacy-client"
+    })
+    .AddInMemoryCollection(new Dictionary<string, string?>
+    {
+        ["PayPal:PAYPAL_CLIENT_ID"] = "user-secret-client"
+    })
+    .Build();
+Check(AppConfiguration.PayPalClientId(prioritySettings) == "user-secret-client", "scoped User Secret values override placeholders and legacy fallbacks");
+
 var settings = new ConfigurationBuilder()
     .AddInMemoryCollection(
         new Dictionary<string, string?>
         {
-            ["PAYPAL_CLIENT_ID"] = "test-client",
-            ["PAYPAL_CLIENT_SECRET"] = "test-secret",
-            ["OPENAI_API_KEY"] = "test-key",
-            ["OPENAI_MODEL"] = "test-model",
+            ["PayPal:PAYPAL_CLIENT_ID"] = "test-client",
+            ["PayPal:PAYPAL_CLIENT_SECRET"] = "test-secret",
+            ["AgentAI:OPENAI_API_KEY"] = "test-key",
+            ["AgentAI:OPENAI_MODEL"] = "test-model",
         }
     )
     .Build();
@@ -168,9 +192,9 @@ using (var gmcKey = RSA.Create(2048))
 }
 var gmcSettings = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
 {
-    ["GMC_MERCHANT_ACCOUNT_ID"] = "5308690318",
-    ["GMC_SERVICE_ACCOUNT_JSON"] = gmcKeyPath,
-    ["GMC_TENANT_ID"] = "local"
+    ["GoogleMerchant:GMC_MERCHANT_ACCOUNT_ID"] = "5308690318",
+    ["GoogleMerchant:GMC_SERVICE_ACCOUNT_JSON"] = gmcKeyPath,
+    ["GoogleMerchant:GMC_TENANT_ID"] = "local"
 }).Build();
 var gmcHandler = new GmcFakeHandler();
 var gmc = new GmcCatalogProvider(new FakeFactory(gmcHandler), gmcSettings);
@@ -310,7 +334,7 @@ new DemoStore(anchorDatabase).AddOrder(catalog.Find("p1")!, "ANCHOR-ORDER");
 var anchorConfiguration = new ConfigurationBuilder()
     .AddInMemoryCollection(new Dictionary<string, string?>
     {
-        ["PAYPAL360_AUDIT_ANCHOR_SECRET"] = "0123456789abcdef0123456789abcdef"
+        ["Audit:PAYPAL360_AUDIT_ANCHOR_SECRET"] = "0123456789abcdef0123456789abcdef"
     })
     .Build();
 var trustAnchor = new AuditTrustAnchor(anchorDatabase, anchorConfiguration);

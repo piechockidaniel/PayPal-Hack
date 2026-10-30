@@ -29,14 +29,14 @@ internal static class IntegrationChecks
             builder.UseContentRoot(root);
             builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["PAYPAL360_ADMIN_USERNAME"] = "test-admin",
-                ["PAYPAL360_ADMIN_PASSWORD"] = "test-only-pass-12345",
-                ["OPENAI_API_KEY"] = "test-key",
-                ["OPENAI_MODEL"] = "test-model",
-                ["PAYPAL_CLIENT_ID"] = "test-client",
-                ["PAYPAL_CLIENT_SECRET"] = "test-secret",
-                ["PAYPAL_WEBHOOK_ID"] = "test-webhook",
-                ["PAYPAL360_AUDIT_ANCHOR_SECRET"] = "0123456789abcdef0123456789abcdef"
+                ["LocalAuth:PAYPAL360_ADMIN_USERNAME"] = "test-admin",
+                ["LocalAuth:PAYPAL360_ADMIN_PASSWORD"] = "test-only-pass-12345",
+                ["AgentAI:OPENAI_API_KEY"] = "test-key",
+                ["AgentAI:OPENAI_MODEL"] = "test-model",
+                ["PayPal:PAYPAL_CLIENT_ID"] = "test-client",
+                ["PayPal:PAYPAL_CLIENT_SECRET"] = "test-secret",
+                ["PayPal:PAYPAL_WEBHOOK_ID"] = "test-webhook",
+                ["Audit:PAYPAL360_AUDIT_ANCHOR_SECRET"] = "0123456789abcdef0123456789abcdef"
             }));
             builder.ConfigureTestServices(services => { services.RemoveAll<IHttpClientFactory>(); services.AddSingleton<IHttpClientFactory>(new FakeAiFactory()); });
             builder.ConfigureLogging(logging => logging.ClearProviders().AddConsole());

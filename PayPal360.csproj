@@ -4,6 +4,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <DefaultItemExcludes>$(DefaultItemExcludes);checks/**;integration-checks/**;PayPal360.Contracts/**;design/**;data/**</DefaultItemExcludes>
+    <UserSecretsId>ea3c352a-681c-4f73-978b-211856254b4e</UserSecretsId>
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="checks/**/*.cs;integration-checks/**/*.cs;PayPal360.Contracts/**/*.cs" />

@@ -21,8 +21,8 @@ public sealed class LocalAuth
     public LocalAuth(CommerceDatabase database, IConfiguration configuration)
     {
         this.database = database;
-        var name = (configuration["PAYPAL360_ADMIN_USERNAME"] ?? "").Trim();
-        var password = configuration["PAYPAL360_ADMIN_PASSWORD"] ?? "";
+        var name = AppConfiguration.AdminUsername(configuration) ?? "";
+        var password = AppConfiguration.AdminPassword(configuration) ?? "";
         if (name.Length is < 1 or > 80 || password.Length is < 12 or > 128)
             return;
 

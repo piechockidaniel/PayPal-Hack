@@ -17,7 +17,9 @@ using PayPal360.Contracts.Exceptions;
 using PayPal360.Contracts.Providers;
 
 var builder = WebApplication.CreateBuilder(args);
-var configuredWebhookHost = (builder.Configuration["PAYPAL360_WEBHOOK_HOST"] ?? "").Trim();
+if (builder.Environment.IsDevelopment())
+    builder.Configuration.AddUserSecrets<Program>(optional: true, reloadOnChange: false);
+var configuredWebhookHost = AppConfiguration.PayPalWebhookHost(builder.Configuration) ?? "";
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton(new CommerceDatabase(Path.Combine(builder.Environment.ContentRootPath, "data")));
 builder.Services.AddSingleton<DemoStore>();
@@ -40,14 +42,14 @@ builder.Services.ConfigureHttpJsonOptions(o => o.SerializerOptions.Converters.Ad
 builder.Services.AddSingleton<LocalAuth>();
 var keyDirectory = Directory.CreateDirectory(Path.Combine(builder.Environment.ContentRootPath, "data", "keys"));
 var dataProtection = builder.Services.AddDataProtection().PersistKeysToFileSystem(keyDirectory);
-var protectionCertificatePath = builder.Configuration["PAYPAL360_DATA_PROTECTION_CERTIFICATE_PATH"];
+var protectionCertificatePath = AppConfiguration.DataProtectionCertificatePath(builder.Configuration);
 if (!string.IsNullOrWhiteSpace(protectionCertificatePath))
 {
     if (!File.Exists(protectionCertificatePath))
         throw new InvalidOperationException("Configured data-protection certificate was not found.");
     var certificate = X509CertificateLoader.LoadPkcs12FromFile(
         protectionCertificatePath,
-        builder.Configuration["PAYPAL360_DATA_PROTECTION_CERTIFICATE_PASSWORD"],
+        AppConfiguration.DataProtectionCertificatePassword(builder.Configuration),
         X509KeyStorageFlags.EphemeralKeySet);
     dataProtection.ProtectKeysWithCertificate(certificate);
 }
@@ -74,7 +76,8 @@ builder.Services.AddRateLimiter(options => options.AddPolicy("login", context =>
         new FixedWindowRateLimiterOptions { PermitLimit = 5, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 })));
 
 var app = builder.Build();
-// Initialize the administrator from environment variables only on an empty database.
+// Initialize the administrator from configured local User Secrets (or the
+// deployment environment fallback) only on an empty database.
 _ = app.Services.GetRequiredService<LocalAuth>();
 // The application remains local-only except for the explicitly configured
 // PayPal webhook host. The webhook still has to arrive from the local reverse
@@ -242,9 +245,9 @@ app.UseStaticFiles();
 
 app.MapGet("/api/status", (IConfiguration c, LocalAuth auth) => new
 {
-    paypal = !string.IsNullOrWhiteSpace(c["PAYPAL_CLIENT_ID"]) && !string.IsNullOrWhiteSpace(c["PAYPAL_CLIENT_SECRET"]),
-    clientId = c["PAYPAL_CLIENT_ID"] ?? "",
-    ai = !string.IsNullOrWhiteSpace(c["OPENAI_API_KEY"]) && !string.IsNullOrWhiteSpace(c["OPENAI_MODEL"]),
+    paypal = !string.IsNullOrWhiteSpace(AppConfiguration.PayPalClientId(c)) && !string.IsNullOrWhiteSpace(AppConfiguration.PayPalClientSecret(c)),
+    clientId = AppConfiguration.PayPalClientId(c) ?? "",
+    ai = !string.IsNullOrWhiteSpace(AppConfiguration.OpenAiApiKey(c)) && !string.IsNullOrWhiteSpace(AppConfiguration.OpenAiModel(c)),
     operatorConfigured = auth.IsConfigured(),
     environment = "PayPal sandbox only"
 });
@@ -254,8 +257,8 @@ app.MapGet("/api/connectors", (HttpContext context, IConfiguration c, CommerceDa
     var verifications = database.Read(state => state.ConnectorVerifications
         .Where(item => string.Equals(item.TenantId ?? "local", tenantId, StringComparison.Ordinal))
         .ToDictionary(item => item.ConnectorId, StringComparer.Ordinal));
-    var paypalConfigured = !string.IsNullOrWhiteSpace(c["PAYPAL_CLIENT_ID"]) && !string.IsNullOrWhiteSpace(c["PAYPAL_CLIENT_SECRET"]);
-    var gmcConfigured = !string.IsNullOrWhiteSpace(c["GMC_MERCHANT_ACCOUNT_ID"]) && !string.IsNullOrWhiteSpace(c["GMC_SERVICE_ACCOUNT_JSON"] ?? c["GOOGLE_APPLICATION_CREDENTIALS"]);
+    var paypalConfigured = !string.IsNullOrWhiteSpace(AppConfiguration.PayPalClientId(c)) && !string.IsNullOrWhiteSpace(AppConfiguration.PayPalClientSecret(c));
+    var gmcConfigured = !string.IsNullOrWhiteSpace(AppConfiguration.GmcMerchantAccountId(c)) && !string.IsNullOrWhiteSpace(AppConfiguration.GmcServiceAccountJson(c));
     string Status(string id, bool configured) => !configured ? "not-configured" : verifications.TryGetValue(id, out var check) ? check.Status : "configured-not-verified";
     string Detail(string id, string fallback) => verifications.TryGetValue(id, out var check) ? check.Detail + " Checked " + check.CheckedAt.ToLocalTime().ToString("g") + "." : fallback;
     return new[] {
@@ -314,7 +317,7 @@ app.MapGet("/api/connectors/gmc/products", async (HttpContext context, LocalAuth
 });
 app.MapPost("/api/webhooks/paypal", async (HttpRequest request, IConfiguration configuration, PayPalSandboxProvider provider, PayPalWebhookQueue queue, CancellationToken ct) =>
 {
-    var webhookId = configuration["PAYPAL_WEBHOOK_ID"];
+    var webhookId = AppConfiguration.PayPalWebhookId(configuration);
     if (string.IsNullOrWhiteSpace(webhookId))
         return Results.Problem("PayPal webhook verification is not configured.", statusCode: StatusCodes.Status503ServiceUnavailable);
     var headers = new PayPalWebhookHeaders(

@@ -7,6 +7,51 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+$projectPath = (Resolve-Path (Join-Path $PSScriptRoot '..\PayPal360.csproj')).Path
+$secretValues = @{}
+$placeholderValues = @('ChangeMe', 'your_openai_api_key', 'your_openai_model')
+function Test-ConfiguredValue {
+    param([string]$Value)
+    return -not [string]::IsNullOrWhiteSpace($Value) -and $placeholderValues -notcontains $Value.Trim()
+}
+try {
+    $secretLines = @(dotnet user-secrets list --project $projectPath 2>$null)
+    foreach ($line in $secretLines) {
+        $separator = $line.IndexOf('=')
+        if ($separator -lt 1) {
+            continue
+        }
+        $key = $line.Substring(0, $separator).Trim()
+        $value = $line.Substring($separator + 1).Trim()
+        if ($key) {
+            $secretValues[$key] = $value
+        }
+    }
+}
+catch {
+    # Environment fallback remains available for deployment-style runs.
+}
+
+function Get-ConfiguredValue {
+    param(
+        [string]$SecretKey,
+        [string]$EnvironmentKey
+    )
+
+    if ($secretValues.ContainsKey($SecretKey) -and (Test-ConfiguredValue $secretValues[$SecretKey])) {
+        return $secretValues[$SecretKey]
+    }
+    $environmentValue = [Environment]::GetEnvironmentVariable($EnvironmentKey)
+    if (Test-ConfiguredValue $environmentValue) {
+        return $environmentValue
+    }
+    $scopedEnvironmentValue = [Environment]::GetEnvironmentVariable($SecretKey.Replace(':', '__'))
+    if (Test-ConfiguredValue $scopedEnvironmentValue) {
+        return $scopedEnvironmentValue
+    }
+    return $null
+}
+
 function Assert-Pass {
     param([string]$Message)
     Write-Host "PASS $Message" -ForegroundColor Green
@@ -18,18 +63,16 @@ function Assert-Fail {
 }
 
 $required = @(
-    'PAYPAL_CLIENT_ID',
-    'PAYPAL_CLIENT_SECRET',
-    'PAYPAL_WEBHOOK_ID',
-    'PAYPAL360_WEBHOOK_HOST'
+    @{ Secret = 'PayPal:PAYPAL_CLIENT_ID'; Environment = 'PAYPAL_CLIENT_ID' },
+    @{ Secret = 'PayPal:PAYPAL_CLIENT_SECRET'; Environment = 'PAYPAL_CLIENT_SECRET' },
+    @{ Secret = 'PayPal:PAYPAL_WEBHOOK_ID'; Environment = 'PAYPAL_WEBHOOK_ID' },
+    @{ Secret = 'PayPal:PAYPAL360_WEBHOOK_HOST'; Environment = 'PAYPAL360_WEBHOOK_HOST' }
 )
-$missing = @($required | Where-Object {
-    [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_))
-})
+$missing = @($required | Where-Object { [string]::IsNullOrWhiteSpace((Get-ConfiguredValue $_.Secret $_.Environment)) } | ForEach-Object { $_.Secret })
 if ($missing.Count -gt 0) {
-    Assert-Fail "required environment variables are missing: $($missing -join ', ')"
+    Assert-Fail "required PayPal settings are missing from .NET User Secrets or the deployment environment: $($missing -join ', ')"
 }
-Assert-Pass 'required environment variable names are populated'
+Assert-Pass 'required PayPal settings are populated from .NET User Secrets or the deployment environment'
 
 foreach ($port in @($UiPort, $WebhookPort)) {
     $listening = Test-NetConnection -ComputerName 127.0.0.1 -Port $port `

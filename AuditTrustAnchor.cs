@@ -88,7 +88,7 @@ public sealed class AuditTrustAnchor(CommerceDatabase database, IConfiguration c
 
     private string? ReadSecret()
     {
-        var secret = configuration["PAYPAL360_AUDIT_ANCHOR_SECRET"]?.Trim();
+        var secret = AppConfiguration.AuditAnchorSecret(configuration);
         return secret is { Length: >= MinimumSecretLength } ? secret : null;
     }
 

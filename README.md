@@ -40,21 +40,43 @@ This repository currently demonstrates the workflow with PayPal Sandbox and loca
 
 Requires the .NET 10 SDK. Configure the local administrator before the **first** launch:
 
+Use .NET User Secrets for local development; no `.env` file is required or
+loaded by the application. The project already has a User Secrets ID. Set
+only the values you use, from the repository root, for example:
+
 ```powershell
-$env:PAYPAL360_ADMIN_USERNAME = '<local administrator username>'
-$env:PAYPAL360_ADMIN_PASSWORD = '<unique password of at least 12 characters>'
-$env:PAYPAL_CLIENT_ID = '<PayPal sandbox client ID>'
-$env:PAYPAL_CLIENT_SECRET = '<PayPal sandbox client secret>'
-$env:PAYPAL_WEBHOOK_ID = '<PayPal sandbox webhook ID>'
-$env:PAYPAL360_WEBHOOK_HOST = '<public webhook hostname, only when using the trusted loopback tunnel>'
-$env:GMC_MERCHANT_ACCOUNT_ID = '<your Merchant Center account ID, optional>'
-$env:GMC_SERVICE_ACCOUNT_JSON = '<path to an external service-account JSON file, optional>'
-$env:GMC_TENANT_ID = 'local'
-$env:OPENAI_API_KEY = '<OpenAI API key>'
-$env:OPENAI_MODEL = '<Responses API compatible model>'
-$env:PAYPAL360_AUDIT_ANCHOR_SECRET = '<external secret, at least 32 characters>'
+dotnet user-secrets set "LocalAuth:PAYPAL360_ADMIN_USERNAME" "<local administrator username>"
+dotnet user-secrets set "LocalAuth:PAYPAL360_ADMIN_PASSWORD" "<unique password of at least 12 characters>"
+dotnet user-secrets set "PayPal:PAYPAL_CLIENT_ID" "<PayPal sandbox client ID>"
+dotnet user-secrets set "PayPal:PAYPAL_CLIENT_SECRET" "<PayPal sandbox client secret>"
+dotnet user-secrets set "PayPal:PAYPAL_WEBHOOK_ID" "<PayPal sandbox webhook ID>"
+dotnet user-secrets set "PayPal:PAYPAL360_WEBHOOK_HOST" "<public webhook hostname>"
+dotnet user-secrets set "AgentAI:OPENAI_API_KEY" "<OpenAI API key>"
+dotnet user-secrets set "AgentAI:OPENAI_MODEL" "<Responses API compatible model>"
+dotnet user-secrets set "GoogleMerchant:GMC_MERCHANT_ACCOUNT_ID" "<Merchant Center account ID>"
+dotnet user-secrets set "GoogleMerchant:GMC_SERVICE_ACCOUNT_JSON" "<external JSON key path>"
+dotnet user-secrets set "GoogleMerchant:GMC_TENANT_ID" "local"
+dotnet user-secrets set "Audit:PAYPAL360_AUDIT_ANCHOR_SECRET" "<external secret, at least 32 characters>"
 dotnet run --urls http://127.0.0.1:5080
 ```
+
+`appsettings.json` documents the supported sections and keys with safe
+`ChangeMe` placeholders. The application treats those placeholders as
+unconfigured. In Development, matching User Secrets take priority over this
+structure; never replace the placeholders with real credentials in
+`appsettings.json`.
+
+To create the optional local data-protection certificate and configure its
+User Secrets automatically, run:
+
+```powershell
+.\tools\New-PayPal360DataProtectionCertificate.ps1
+```
+
+The script stores the password-protected certificate under the user's local
+application-data directory, outside the repository. This certificate is for
+local ASP.NET data-protection keys only; it is not a PayPal certificate or a
+webhook/TLS certificate.
 
 Open http://127.0.0.1:5080 and sign in. PayPal and AI credentials are optional for startup, but required for their respective actions. The PayPal endpoint is fixed to the sandbox. The application rejects requests from non-loopback clients and non-local host names, except for `/api/webhooks/paypal` when `PAYPAL360_WEBHOOK_HOST` exactly matches the request host and the request still arrives over loopback from a trusted reverse proxy or tunnel.
 
@@ -66,7 +88,7 @@ dotnet run --no-build --urls "https://localhost:64490;http://localhost:64491"
 
 Open `https://localhost:64490`; the reverse tunnel forwards only the PayPal webhook to `http://localhost:64491`. The complete recording sequence and preflight are in `DEMO-RECORDING.md`.
 
-The first valid administrator credentials initialize one account in the local database; the password is stored as a hash. Subsequent environment changes do not replace that account. An administrator can create additional tenant-scoped human accounts through the authenticated `/api/users` endpoint. Local usernames are globally unique because login identifies an account by username without a separate tenant selector. Password rotation and recovery are still outside this sandbox. The application reads environment variables; it does not automatically load an `.env` file.
+In Development, the application reads the grouped User Secrets above first. Flat environment names remain supported as a deployment fallback, and environment names using the `Section__Key` convention are also supported. The first valid administrator credentials initialize one account in the local database; the password is stored as a hash. Subsequent configuration changes do not replace that account. An administrator can create additional tenant-scoped human accounts through the authenticated `/api/users` endpoint. Local usernames are globally unique because login identifies an account by username without a separate tenant selector. Password rotation and recovery are still outside this sandbox.
 
 For the verified Sandbox webhook path, set `PAYPAL360_WEBHOOK_HOST=paypal.connect-the-dots.biz`. PayPal sends to `https://paypal.connect-the-dots.biz/api/webhooks/paypal`; OpenLiteSpeed terminates HTTPS and forwards VPS loopback port `16491` through the certificate-authenticated reverse tunnel to the local HTTP listener on port `64491`. The local UI and merchant APIs remain loopback-only. The per-user supervisor and install/remove procedures are in `tools/webhook-tunnel/`; the VPS certificate renewal remains the operator's responsibility.
 
@@ -92,9 +114,9 @@ Human roles, tenant-scoped users, agent identities, parent delegation and option
 
 ## Prototype limitations
 
-This is not a production-ready store. SQLite stores the prototype state as a single serialized record; it is not designed for high volume or production multi-tenant operation. Local data-protection keys are stored under `data/keys`; configure `PAYPAL360_DATA_PROTECTION_CERTIFICATE_PATH` and its local secret password to encrypt them with an X.509 certificate, otherwise the local sandbox emits the framework warning about unencrypted key storage. Audit events have a locally verifiable SHA-256 hash chain and `/api/audit/verify`; an optional external-secret checkpoint is available, but there is no independently managed archive, retention policy, secret rotation/recovery process, or tamper-proof production archive. There is no password rotation, stock reservation, tax or shipping calculation, merchant onboarding or production access. The webhook route is externally reachable only through the configured reverse tunnel; do not expose the UI or use live accounts.
+This is not a production-ready store. SQLite stores the prototype state as a single serialized record; it is not designed for high volume or production multi-tenant operation. Local data-protection keys are stored under `data/keys`; configure `DataProtection:PAYPAL360_DATA_PROTECTION_CERTIFICATE_PATH` and `DataProtection:PAYPAL360_DATA_PROTECTION_CERTIFICATE_PASSWORD` in User Secrets (or use their flat deployment fallback names) to encrypt them with an X.509 certificate, otherwise the local sandbox emits the framework warning about unencrypted key storage. Audit events have a locally verifiable SHA-256 hash chain and `/api/audit/verify`; an optional `Audit:PAYPAL360_AUDIT_ANCHOR_SECRET` checkpoint is available, but there is no independently managed archive, retention policy, secret rotation/recovery process, or tamper-proof production archive. There is no password rotation, stock reservation, tax or shipping calculation, merchant onboarding or production access. The webhook route is externally reachable only through the configured reverse tunnel; do not expose the UI or use live accounts.
 
-The connector registry starts unverified until an administrator uses the in-app Verify control; verification results are persisted and shown in the GUI. PayPal verification performs OAuth without creating an order, while GMC verification performs its bounded read-only catalog probe. An administrator can download the complete audit chain from `GET /api/audit/export` as NDJSON. If `PAYPAL360_AUDIT_ANCHOR_SECRET` is configured outside the database, `GET /api/audit/anchor` returns a signed checkpoint and `POST /api/audit/anchor/verify` verifies it; the export and returned artifact must be archived independently and the application never deletes audit history automatically. The PayPal Sandbox flow, connector verification controls and approved refund handler are covered by deterministic checks; the configured GMC connector remains read-only. See `DEMO-RECORDING.md`, `ROADMAP.md` and `NEXT-PHASE-PLAN.md` for the recording flow and remaining work.
+The connector registry starts unverified until an administrator uses the in-app Verify control; verification results are persisted and shown in the GUI. PayPal verification performs OAuth without creating an order, while GMC verification performs its bounded read-only catalog probe. An administrator can download the complete audit chain from `GET /api/audit/export` as NDJSON. If the User Secret `Audit:PAYPAL360_AUDIT_ANCHOR_SECRET` (or its flat deployment fallback) is configured outside the database, `GET /api/audit/anchor` returns a signed checkpoint and `POST /api/audit/anchor/verify` verifies it; the export and returned artifact must be archived independently and the application never deletes audit history automatically. The PayPal Sandbox flow, connector verification controls and approved refund handler are covered by deterministic checks; the configured GMC connector remains read-only. See `DEMO-RECORDING.md`, `ROADMAP.md` and `NEXT-PHASE-PLAN.md` for the recording flow and remaining work.
 
 ## Checks and formatting
 

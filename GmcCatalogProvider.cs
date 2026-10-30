@@ -17,10 +17,9 @@ public sealed class GmcCatalogProvider(IHttpClientFactory clients, IConfiguratio
 
     public bool IsConfigured => !string.IsNullOrWhiteSpace(AccountId) && !string.IsNullOrWhiteSpace(CredentialsPath);
 
-    private string? AccountId => configuration["GMC_MERCHANT_ACCOUNT_ID"]?.Trim();
-    private string? CredentialsPath => configuration["GMC_SERVICE_ACCOUNT_JSON"]?.Trim()
-        ?? configuration["GOOGLE_APPLICATION_CREDENTIALS"]?.Trim();
-    private string TenantId => configuration["GMC_TENANT_ID"]?.Trim() is { Length: > 0 } tenant ? tenant : "local";
+    private string? AccountId => AppConfiguration.GmcMerchantAccountId(configuration);
+    private string? CredentialsPath => AppConfiguration.GmcServiceAccountJson(configuration);
+    private string TenantId => AppConfiguration.GmcTenantId(configuration);
 
     public async Task<GmcCatalogPage> ListProductsAsync(string tenantId, string? pageToken, int pageSize, CancellationToken cancellationToken)
     {
